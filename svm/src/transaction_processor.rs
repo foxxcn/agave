@@ -16,6 +16,8 @@ use {
     },
     log::debug,
     percentage::Percentage,
+    solana_bpf_loader_program::syscalls::create_program_runtime_environment_v1,
+    solana_loader_v4_program::create_program_runtime_environment_v2,
     solana_measure::measure::Measure,
     solana_program_runtime::{
         compute_budget::ComputeBudget,
@@ -32,6 +34,7 @@ use {
         account::{AccountSharedData, ReadableAccount, PROGRAM_OWNERS},
         clock::{Epoch, Slot},
         epoch_schedule::EpochSchedule,
+        feature_set::FeatureSet,
         fee::FeeStructure,
         inner_instruction::{InnerInstruction, InnerInstructionsList},
         instruction::{CompiledInstruction, TRANSACTION_LEVEL_STACK_HEIGHT},
@@ -46,7 +49,10 @@ use {
         collections::{hash_map::Entry, HashMap, HashSet},
         fmt::{Debug, Formatter},
         rc::Rc,
-        sync::{atomic::Ordering, Arc, RwLock},
+        sync::{
+            atomic::Ordering::{self, Relaxed},
+            Arc, RwLock,
+        },
     },
 };
 
@@ -198,13 +204,13 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
             program_accounts_map.insert(*builtin_program, 0);
         }
 
-        let programs_loaded_for_tx_batch = Rc::new(RefCell::new(self.replenish_program_cache(
+        let program_cache_for_tx_batch = Rc::new(RefCell::new(self.replenish_program_cache(
             callbacks,
             &program_accounts_map,
             limit_to_load_programs,
         )));
 
-        if programs_loaded_for_tx_batch.borrow().hit_max_limit {
+        if program_cache_for_tx_batch.borrow().hit_max_limit {
             const ERROR: TransactionError = TransactionError::ProgramCacheHitMaxLimit;
             let loaded_transactions = vec![(Err(ERROR), None); sanitized_txs.len()];
             let execution_results =
@@ -224,7 +230,7 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
             error_counters,
             &self.fee_structure,
             account_overrides,
-            &programs_loaded_for_tx_batch.borrow(),
+            &program_cache_for_tx_batch.borrow(),
         );
         load_time.stop();
 
@@ -268,7 +274,7 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
                         timings,
                         error_counters,
                         log_messages_bytes_limit,
-                        &programs_loaded_for_tx_batch.borrow(),
+                        &program_cache_for_tx_batch.borrow(),
                     );
 
                     if let TransactionExecutionResult::Executed {
@@ -279,7 +285,7 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
                         // Update batch specific cache of the loaded programs with the modifications
                         // made by the transaction, if it executed successfully.
                         if details.status.is_ok() {
-                            programs_loaded_for_tx_batch
+                            program_cache_for_tx_batch
                                 .borrow_mut()
                                 .merge(programs_modified_by_tx);
                         }
@@ -296,8 +302,8 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
         // ProgramCache entries. Note that loaded_missing is deliberately defined, so that there's
         // still at least one other batch, which will evict the program cache, even after the
         // occurrences of cooperative loading.
-        if programs_loaded_for_tx_batch.borrow().loaded_missing
-            || programs_loaded_for_tx_batch.borrow().merged_modified
+        if program_cache_for_tx_batch.borrow().loaded_missing
+            || program_cache_for_tx_batch.borrow().merged_modified
         {
             const SHRINK_LOADED_PROGRAMS_TO_PERCENTAGE: u8 = 90;
             self.program_cache
@@ -462,6 +468,83 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
         loaded_programs_for_txs.unwrap()
     }
 
+    pub fn prepare_program_cache_for_upcoming_feature_set<CB: TransactionProcessingCallback>(
+        &self,
+        callbacks: &CB,
+        upcoming_feature_set: &FeatureSet,
+    ) {
+        // Recompile loaded programs one at a time before the next epoch hits
+        let (_epoch, slot_index) = self.epoch_schedule.get_epoch_and_slot_index(self.slot);
+        let slots_in_epoch = self.epoch_schedule.get_slots_in_epoch(self.epoch);
+        let slots_in_recompilation_phase =
+            (solana_program_runtime::loaded_programs::MAX_LOADED_ENTRY_COUNT as u64)
+                .min(slots_in_epoch)
+                .checked_div(2)
+                .unwrap();
+        let mut program_cache = self.program_cache.write().unwrap();
+        if program_cache.upcoming_environments.is_some() {
+            if let Some((key, program_to_recompile)) = program_cache.programs_to_recompile.pop() {
+                let effective_epoch = program_cache.latest_root_epoch.saturating_add(1);
+                drop(program_cache);
+                let program_cache_read = self.program_cache.read().unwrap();
+                if let Some(recompiled) = load_program_with_pubkey(
+                    callbacks,
+                    &program_cache_read,
+                    &key,
+                    self.slot,
+                    effective_epoch,
+                    &self.epoch_schedule,
+                    false,
+                ) {
+                    drop(program_cache_read);
+                    recompiled
+                        .tx_usage_counter
+                        .fetch_add(program_to_recompile.tx_usage_counter.load(Relaxed), Relaxed);
+                    recompiled
+                        .ix_usage_counter
+                        .fetch_add(program_to_recompile.ix_usage_counter.load(Relaxed), Relaxed);
+                    let mut program_cache = self.program_cache.write().unwrap();
+                    program_cache.assign_program(key, recompiled);
+                }
+            }
+        } else if self.epoch != program_cache.latest_root_epoch
+            || slot_index.saturating_add(slots_in_recompilation_phase) >= slots_in_epoch
+        {
+            // Anticipate the upcoming program runtime environment for the next epoch,
+            // so we can try to recompile loaded programs before the feature transition hits.
+            drop(program_cache);
+            let mut program_cache = self.program_cache.write().unwrap();
+            let program_runtime_environment_v1 = create_program_runtime_environment_v1(
+                upcoming_feature_set,
+                &self.runtime_config.compute_budget.unwrap_or_default(),
+                false, /* deployment */
+                false, /* debugging_features */
+            )
+            .unwrap();
+            let program_runtime_environment_v2 = create_program_runtime_environment_v2(
+                &self.runtime_config.compute_budget.unwrap_or_default(),
+                false, /* debugging_features */
+            );
+            let mut upcoming_environments = program_cache.environments.clone();
+            let changed_program_runtime_v1 =
+                *upcoming_environments.program_runtime_v1 != program_runtime_environment_v1;
+            let changed_program_runtime_v2 =
+                *upcoming_environments.program_runtime_v2 != program_runtime_environment_v2;
+            if changed_program_runtime_v1 {
+                upcoming_environments.program_runtime_v1 = Arc::new(program_runtime_environment_v1);
+            }
+            if changed_program_runtime_v2 {
+                upcoming_environments.program_runtime_v2 = Arc::new(program_runtime_environment_v2);
+            }
+            program_cache.upcoming_environments = Some(upcoming_environments);
+            program_cache.programs_to_recompile = program_cache
+                .get_flattened_entries(changed_program_runtime_v1, changed_program_runtime_v2);
+            program_cache
+                .programs_to_recompile
+                .sort_by_cached_key(|(_id, program)| program.decayed_usage_counter(self.slot));
+        }
+    }
+
     /// Execute a transaction using the provided loaded accounts and update
     /// the executors cache if the transaction was successful.
     #[allow(clippy::too_many_arguments)]
@@ -476,7 +559,7 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
         timings: &mut ExecuteTimings,
         error_counters: &mut TransactionErrorMetrics,
         log_messages_bytes_limit: Option<usize>,
-        programs_loaded_for_tx_batch: &ProgramCacheForTxBatch,
+        program_cache_for_tx_batch: &ProgramCacheForTxBatch,
     ) -> TransactionExecutionResult {
         let transaction_accounts = std::mem::take(&mut loaded_transaction.accounts);
 
@@ -527,14 +610,15 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
         let mut executed_units = 0u64;
         let mut programs_modified_by_tx = ProgramCacheForTxBatch::new(
             self.slot,
-            programs_loaded_for_tx_batch.environments.clone(),
-            programs_loaded_for_tx_batch.upcoming_environments.clone(),
-            programs_loaded_for_tx_batch.latest_root_epoch,
+            program_cache_for_tx_batch.environments.clone(),
+            program_cache_for_tx_batch.upcoming_environments.clone(),
+            program_cache_for_tx_batch.latest_root_epoch,
         );
         let sysvar_cache = &self.sysvar_cache.read().unwrap();
 
         let mut invoke_context = InvokeContext::new(
             &mut transaction_context,
+            program_cache_for_tx_batch,
             EnvironmentConfig::new(
                 blockhash,
                 callback.get_feature_set(),
@@ -543,7 +627,6 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
             ),
             log_collector.clone(),
             compute_budget,
-            programs_loaded_for_tx_batch,
             &mut programs_modified_by_tx,
         );
 
@@ -892,7 +975,7 @@ mod tests {
         };
 
         let sanitized_message = new_unchecked_sanitized_message(message);
-        let loaded_programs = ProgramCacheForTxBatch::default();
+        let program_cache_for_tx_batch = ProgramCacheForTxBatch::default();
         let mock_bank = MockBankCallback::default();
         let batch_processor = TransactionBatchProcessor::<TestForkGraph>::default();
 
@@ -925,7 +1008,7 @@ mod tests {
             &mut ExecuteTimings::default(),
             &mut TransactionErrorMetrics::default(),
             None,
-            &loaded_programs,
+            &program_cache_for_tx_batch,
         );
 
         let TransactionExecutionResult::Executed {
@@ -947,7 +1030,7 @@ mod tests {
             &mut ExecuteTimings::default(),
             &mut TransactionErrorMetrics::default(),
             Some(2),
-            &loaded_programs,
+            &program_cache_for_tx_batch,
         );
 
         let TransactionExecutionResult::Executed {
@@ -978,7 +1061,7 @@ mod tests {
             &mut ExecuteTimings::default(),
             &mut TransactionErrorMetrics::default(),
             None,
-            &loaded_programs,
+            &program_cache_for_tx_batch,
         );
 
         let TransactionExecutionResult::Executed {
@@ -1016,7 +1099,7 @@ mod tests {
         };
 
         let sanitized_message = new_unchecked_sanitized_message(message);
-        let loaded_programs = ProgramCacheForTxBatch::default();
+        let program_cache_for_tx_batch = ProgramCacheForTxBatch::default();
         let mock_bank = MockBankCallback::default();
         let batch_processor = TransactionBatchProcessor::<TestForkGraph>::default();
 
@@ -1051,7 +1134,7 @@ mod tests {
             &mut ExecuteTimings::default(),
             &mut error_metrics,
             None,
-            &loaded_programs,
+            &program_cache_for_tx_batch,
         );
 
         assert_eq!(error_metrics.instruction_error, 1);

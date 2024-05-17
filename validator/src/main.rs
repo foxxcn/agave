@@ -450,7 +450,7 @@ fn configure_banking_trace_dir_byte_limit(
     matches: &ArgMatches,
 ) {
     validator_config.banking_trace_dir_byte_limit = if matches.is_present("disable_banking_trace") {
-        // disable with an explicit flag; This effectively becomes `opt-out` by reseting to
+        // disable with an explicit flag; This effectively becomes `opt-out` by resetting to
         // DISABLED_BAKING_TRACE_DIR, while allowing us to specify a default sensible limit in clap
         // configuration for cli help.
         DISABLED_BAKING_TRACE_DIR
@@ -1085,6 +1085,8 @@ pub fn main() {
     };
 
     let tpu_connection_pool_size = value_t_or_exit!(matches, "tpu_connection_pool_size", usize);
+    let tpu_max_connections_per_ipaddr_per_minute =
+        value_t_or_exit!(matches, "tpu_max_connections_per_ipaddr_per_minute", u64);
 
     let shrink_ratio = value_t_or_exit!(matches, "accounts_shrink_ratio", f64);
     if !(0.0..=1.0).contains(&shrink_ratio) {
@@ -1980,6 +1982,7 @@ pub fn main() {
         tpu_use_quic,
         tpu_connection_pool_size,
         tpu_enable_udp,
+        tpu_max_connections_per_ipaddr_per_minute,
         admin_service_post_init,
     )
     .unwrap_or_else(|e| {

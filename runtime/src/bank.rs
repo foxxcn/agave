@@ -226,7 +226,6 @@ mod metrics;
 pub(crate) mod partitioned_epoch_rewards;
 mod serde_snapshot;
 mod sysvar_cache;
-#[cfg(test)]
 pub(crate) mod tests;
 
 pub const SECONDS_PER_YEAR: f64 = 365.25 * 24.0 * 60.0 * 60.0;
@@ -491,7 +490,7 @@ pub struct BankFieldsToDeserialize {
 #[derive(Debug)]
 pub(crate) struct BankFieldsToSerialize<'a> {
     pub(crate) blockhash_queue: &'a RwLock<BlockhashQueue>,
-    pub(crate) ancestors: &'a AncestorsForSerialization,
+    pub(crate) ancestors: AncestorsForSerialization,
     pub(crate) hash: Hash,
     pub(crate) parent_hash: Hash,
     pub(crate) parent_slot: Slot,
@@ -1224,75 +1223,12 @@ impl Bank {
             }
         });
 
-        let (_, recompilation_time_us) = measure_us!({
-            // Recompile loaded programs one at a time before the next epoch hits
-            let (_epoch, slot_index) = new.get_epoch_and_slot_index(new.slot());
-            let slots_in_epoch = new.get_slots_in_epoch(new.epoch());
-            let slots_in_recompilation_phase =
-                (solana_program_runtime::loaded_programs::MAX_LOADED_ENTRY_COUNT as u64)
-                    .min(slots_in_epoch)
-                    .checked_div(2)
-                    .unwrap();
-            let mut program_cache = new.transaction_processor.program_cache.write().unwrap();
-            if program_cache.upcoming_environments.is_some() {
-                if let Some((key, program_to_recompile)) = program_cache.programs_to_recompile.pop()
-                {
-                    let effective_epoch = program_cache.latest_root_epoch.saturating_add(1);
-                    drop(program_cache);
-                    if let Some(recompiled) = new.load_program(&key, false, effective_epoch) {
-                        recompiled.tx_usage_counter.fetch_add(
-                            program_to_recompile.tx_usage_counter.load(Relaxed),
-                            Relaxed,
-                        );
-                        recompiled.ix_usage_counter.fetch_add(
-                            program_to_recompile.ix_usage_counter.load(Relaxed),
-                            Relaxed,
-                        );
-                        let mut program_cache =
-                            new.transaction_processor.program_cache.write().unwrap();
-                        program_cache.assign_program(key, recompiled);
-                    }
-                }
-            } else if new.epoch() != program_cache.latest_root_epoch
-                || slot_index.saturating_add(slots_in_recompilation_phase) >= slots_in_epoch
-            {
-                // Anticipate the upcoming program runtime environment for the next epoch,
-                // so we can try to recompile loaded programs before the feature transition hits.
-                drop(program_cache);
-                let (feature_set, _new_feature_activations) = new.compute_active_feature_set(true);
-                let mut program_cache = new.transaction_processor.program_cache.write().unwrap();
-                let program_runtime_environment_v1 = create_program_runtime_environment_v1(
-                    &feature_set,
-                    &new.runtime_config().compute_budget.unwrap_or_default(),
-                    false, /* deployment */
-                    false, /* debugging_features */
-                )
-                .unwrap();
-                let program_runtime_environment_v2 = create_program_runtime_environment_v2(
-                    &new.runtime_config().compute_budget.unwrap_or_default(),
-                    false, /* debugging_features */
-                );
-                let mut upcoming_environments = program_cache.environments.clone();
-                let changed_program_runtime_v1 =
-                    *upcoming_environments.program_runtime_v1 != program_runtime_environment_v1;
-                let changed_program_runtime_v2 =
-                    *upcoming_environments.program_runtime_v2 != program_runtime_environment_v2;
-                if changed_program_runtime_v1 {
-                    upcoming_environments.program_runtime_v1 =
-                        Arc::new(program_runtime_environment_v1);
-                }
-                if changed_program_runtime_v2 {
-                    upcoming_environments.program_runtime_v2 =
-                        Arc::new(program_runtime_environment_v2);
-                }
-                program_cache.upcoming_environments = Some(upcoming_environments);
-                program_cache.programs_to_recompile = program_cache
-                    .get_flattened_entries(changed_program_runtime_v1, changed_program_runtime_v2);
-                program_cache
-                    .programs_to_recompile
-                    .sort_by_cached_key(|(_id, program)| program.decayed_usage_counter(slot));
-            }
-        });
+        let (_, cache_preparation_time_us) = measure_us!(new
+            .transaction_processor
+            .prepare_program_cache_for_upcoming_feature_set(
+                &new,
+                &new.compute_active_feature_set(true).0
+            ));
 
         // Update sysvars before processing transactions
         let (_, update_sysvars_time_us) = measure_us!({
@@ -1328,7 +1264,7 @@ impl Bank {
                 feature_set_time_us,
                 ancestors_time_us,
                 update_epoch_time_us,
-                recompilation_time_us,
+                cache_preparation_time_us,
                 update_sysvars_time_us,
                 fill_sysvar_cache_time_us,
             },
@@ -1716,13 +1652,10 @@ impl Bank {
     }
 
     /// Return subset of bank fields representing serializable state
-    pub(crate) fn get_fields_to_serialize<'a>(
-        &'a self,
-        ancestors: &'a HashMap<Slot, usize>,
-    ) -> BankFieldsToSerialize<'a> {
+    pub(crate) fn get_fields_to_serialize(&self) -> BankFieldsToSerialize {
         BankFieldsToSerialize {
             blockhash_queue: &self.blockhash_queue,
-            ancestors,
+            ancestors: AncestorsForSerialization::from(&self.ancestors),
             hash: *self.hash.read().unwrap(),
             parent_hash: self.parent_hash,
             parent_slot: self.parent_slot,
@@ -6986,7 +6919,7 @@ impl Bank {
     ) -> (Arc<Self>, Arc<RwLock<BankForks>>) {
         let mut bank = Self::new_for_tests(genesis_config);
 
-        bank.ns_per_slot = std::u128::MAX;
+        bank.ns_per_slot = u128::MAX;
         bank.wrap_with_bank_forks_for_tests()
     }
 

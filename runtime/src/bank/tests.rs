@@ -3961,7 +3961,7 @@ fn test_bank_epoch_vote_accounts() {
     let leader_stake = Stake {
         delegation: Delegation {
             stake: leader_lamports,
-            activation_epoch: std::u64::MAX, // bootstrap
+            activation_epoch: u64::MAX, // bootstrap
             ..Delegation::default()
         },
         ..Stake::default()
@@ -4033,7 +4033,7 @@ fn test_zero_signatures() {
     let mut transfer_instruction = system_instruction::transfer(&mint_keypair.pubkey(), &key, 0);
     transfer_instruction.accounts[0].is_signer = false;
     let message = Message::new(&[transfer_instruction], None);
-    let tx = Transaction::new(&[&Keypair::new(); 0], message, bank.last_blockhash());
+    let tx = Transaction::new(&Vec::<&Keypair>::new(), message, bank.last_blockhash());
 
     assert_eq!(
         bank.process_transaction(&tx),
@@ -11964,7 +11964,7 @@ fn test_is_in_slot_hashes_history() {
 }
 
 #[test]
-fn test_feature_activation_loaded_programs_recompilation_phase() {
+fn test_feature_activation_loaded_programs_cache_preparation_phase() {
     solana_logger::setup();
 
     // Bank Setup
