@@ -642,7 +642,7 @@ version = "0.69.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a00dc851838a2120612785d195287475a3ac45514741da670b735818822129a0"
 dependencies = [
- "bitflags 2.4.2",
+ "bitflags 2.5.0",
  "cexpr",
  "clang-sys",
  "itertools",
@@ -664,9 +664,9 @@ checksum = "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
 
 [[package]]
 name = "bitflags"
-version = "2.4.2"
+version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed570934406eb16438a4e976b1b4500774099c13b8cb96eec99f620f05090ddf"
+checksum = "cf4b9d6a944f767f8e5e0db018570623c85f3d925ac718db4e06d0187adb21c1"
 dependencies = [
  "serde",
 ]
@@ -1020,9 +1020,9 @@ checksum = "fd16c4719339c4530435d38e511904438d07cce7950afa3718a84ac36c10e89e"
 
 [[package]]
 name = "chrono"
-version = "0.4.37"
+version = "0.4.38"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a0d04d43504c61aa6c7531f1871dd0d418d91130162063b789da00fd7057a5e"
+checksum = "a21f936df1771bf62b77f047b726c4625ff2e8aa607c01ec06e5a05bd8463401"
 dependencies = [
  "android-tzdata",
  "iana-time-zone",
@@ -3025,7 +3025,7 @@ version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab2156c4fce2f8df6c499cc1c763e4394b7482525bf2a9701c9d79d215f519e4"
 dependencies = [
- "bitflags 2.4.2",
+ "bitflags 2.5.0",
  "cfg-if 1.0.0",
  "cfg_aliases",
  "libc",
@@ -3233,7 +3233,7 @@ version = "0.10.64"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "95a0481286a310808298130d22dd1fef0fa571e05a8f44ec801801e84b216b1f"
 dependencies = [
- "bitflags 2.4.2",
+ "bitflags 2.5.0",
  "cfg-if 1.0.0",
  "foreign-types",
  "libc",
@@ -4133,7 +4133,7 @@ version = "0.38.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ea3e1a662af26cd7a3ba09c0297a31af215563ecf42817c98df621387f4e949"
 dependencies = [
- "bitflags 2.4.2",
+ "bitflags 2.5.0",
  "errno",
  "libc",
  "linux-raw-sys",
@@ -4660,8 +4660,6 @@ dependencies = [
  "serde_derive",
  "smallvec",
  "solana-bucket-map",
- "solana-frozen-abi",
- "solana-frozen-abi-macro",
  "solana-inline-spl",
  "solana-measure",
  "solana-metrics",
@@ -4686,8 +4684,6 @@ dependencies = [
  "num-derive",
  "num-traits",
  "rustc_version",
- "solana-frozen-abi",
- "solana-frozen-abi-macro",
  "solana-program",
  "solana-program-runtime",
  "solana-sdk",
@@ -4749,8 +4745,6 @@ dependencies = [
  "rustc_version",
  "serde",
  "serde_derive",
- "solana-frozen-abi",
- "solana-frozen-abi-macro",
  "solana-sdk",
 ]
 
@@ -4959,8 +4953,6 @@ dependencies = [
  "solana-client",
  "solana-cost-model",
  "solana-entry",
- "solana-frozen-abi",
- "solana-frozen-abi-macro",
  "solana-geyser-plugin-manager",
  "solana-gossip",
  "solana-ledger",
@@ -5009,8 +5001,6 @@ dependencies = [
  "solana-bpf-loader-program",
  "solana-compute-budget-program",
  "solana-config-program",
- "solana-frozen-abi",
- "solana-frozen-abi-macro",
  "solana-loader-v4-program",
  "solana-metrics",
  "solana-program-runtime",
@@ -5072,34 +5062,6 @@ dependencies = [
  "spl-memo",
  "thiserror",
  "tokio",
-]
-
-[[package]]
-name = "solana-frozen-abi"
-version = "2.0.0"
-dependencies = [
- "bs58",
- "bv",
- "generic-array 0.14.7",
- "im",
- "log",
- "memmap2",
- "rustc_version",
- "serde",
- "serde_derive",
- "sha2 0.10.8",
- "solana-frozen-abi-macro",
- "thiserror",
-]
-
-[[package]]
-name = "solana-frozen-abi-macro"
-version = "2.0.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "rustc_version",
- "syn 2.0.58",
 ]
 
 [[package]]
@@ -5166,8 +5128,6 @@ dependencies = [
  "solana-client",
  "solana-connection-cache",
  "solana-entry",
- "solana-frozen-abi",
- "solana-frozen-abi-macro",
  "solana-ledger",
  "solana-logger",
  "solana-measure",
@@ -5201,7 +5161,7 @@ version = "2.0.0"
 dependencies = [
  "assert_matches",
  "bincode",
- "bitflags 2.4.2",
+ "bitflags 2.5.0",
  "byteorder 1.5.0",
  "chrono",
  "chrono-humanize",
@@ -5235,8 +5195,6 @@ dependencies = [
  "solana-bpf-loader-program",
  "solana-cost-model",
  "solana-entry",
- "solana-frozen-abi",
- "solana-frozen-abi-macro",
  "solana-measure",
  "solana-metrics",
  "solana-perf",
@@ -5358,8 +5316,6 @@ dependencies = [
  "rayon",
  "rustc_version",
  "serde",
- "solana-frozen-abi",
- "solana-frozen-abi-macro",
  "solana-metrics",
  "solana-rayon-threadlimit",
  "solana-sdk",
@@ -5392,7 +5348,7 @@ dependencies = [
  "ark-serialize",
  "base64 0.22.0",
  "bincode",
- "bitflags 2.4.2",
+ "bitflags 2.5.0",
  "blake3",
  "borsh 0.10.3",
  "borsh 0.9.3",
@@ -5446,8 +5402,6 @@ dependencies = [
  "rand 0.8.5",
  "rustc_version",
  "serde",
- "solana-frozen-abi",
- "solana-frozen-abi-macro",
  "solana-measure",
  "solana-metrics",
  "solana-sdk",
@@ -5719,8 +5673,6 @@ dependencies = [
  "solana-compute-budget-program",
  "solana-config-program",
  "solana-cost-model",
- "solana-frozen-abi",
- "solana-frozen-abi-macro",
  "solana-inline-spl",
  "solana-loader-v4-program",
  "solana-measure",
@@ -6175,7 +6127,7 @@ name = "solana-sdk"
 version = "2.0.0"
 dependencies = [
  "bincode",
- "bitflags 2.4.2",
+ "bitflags 2.5.0",
  "borsh 1.5.0",
  "bs58",
  "bytemuck",
@@ -6210,8 +6162,6 @@ dependencies = [
  "sha2 0.10.8",
  "sha3 0.10.8",
  "siphasher",
- "solana-frozen-abi",
- "solana-frozen-abi-macro",
  "solana-program",
  "solana-sdk-macro",
  "thiserror",
@@ -6353,8 +6303,6 @@ dependencies = [
  "serde",
  "serde_derive",
  "solana-bpf-loader-program",
- "solana-frozen-abi",
- "solana-frozen-abi-macro",
  "solana-loader-v4-program",
  "solana-measure",
  "solana-metrics",
@@ -6562,8 +6510,6 @@ dependencies = [
  "semver",
  "serde",
  "serde_derive",
- "solana-frozen-abi",
- "solana-frozen-abi-macro",
  "solana-sdk",
 ]
 
@@ -6577,8 +6523,6 @@ dependencies = [
  "rustc_version",
  "serde",
  "serde_derive",
- "solana-frozen-abi",
- "solana-frozen-abi-macro",
  "solana-sdk",
  "thiserror",
 ]
@@ -6594,8 +6538,6 @@ dependencies = [
  "rustc_version",
  "serde",
  "serde_derive",
- "solana-frozen-abi",
- "solana-frozen-abi-macro",
  "solana-metrics",
  "solana-program",
  "solana-program-runtime",

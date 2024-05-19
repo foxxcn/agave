@@ -1111,6 +1111,19 @@ impl AccountStorageEntry {
         }
     }
 
+    /// open a new instance of the storage that is readonly
+    fn reopen_as_readonly(&self) -> Option<Self> {
+        let count_and_status = self.count_and_status.lock_write();
+        self.accounts.reopen_as_readonly().map(|accounts| Self {
+            id: self.id,
+            slot: self.slot,
+            count_and_status: SeqLock::new(*count_and_status),
+            approx_store_count: AtomicUsize::new(self.approx_stored_count()),
+            alive_bytes: AtomicUsize::new(self.alive_bytes()),
+            accounts,
+        })
+    }
+
     pub fn new_existing(
         slot: Slot,
         id: AccountsFileId,
@@ -1273,7 +1286,8 @@ pub fn get_temp_accounts_paths(count: u32) -> IoResult<(Vec<TempDir>, Vec<PathBu
     Ok((temp_dirs, paths))
 }
 
-#[derive(Clone, Default, Debug, Serialize, Deserialize, PartialEq, Eq, AbiExample)]
+#[cfg_attr(feature = "frozen-abi", derive(AbiExample))]
+#[derive(Clone, Default, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BankHashStats {
     pub num_updated_accounts: u64,
     pub num_removed_accounts: u64,
@@ -1464,6 +1478,10 @@ pub struct AccountsDb {
 
     /// storage format to use for new storages
     accounts_file_provider: AccountsFileProvider,
+
+    /// method to use for accessing storages
+    #[allow(dead_code)]
+    storage_access: StorageAccess,
 
     /// this will live here until the feature for partitioned epoch rewards is activated.
     /// At that point, this and other code can be deleted.
@@ -2231,7 +2249,7 @@ pub fn make_min_priority_thread_pool() -> ThreadPool {
         .unwrap()
 }
 
-#[cfg(RUSTC_WITH_SPECIALIZATION)]
+#[cfg(all(RUSTC_WITH_SPECIALIZATION, feature = "frozen-abi"))]
 impl solana_frozen_abi::abi_example::AbiExample for AccountsDb {
     fn example() -> Self {
         let accounts_db = AccountsDb::new_single_for_tests();
@@ -2446,6 +2464,7 @@ impl AccountsDb {
             log_dead_slots: AtomicBool::new(true),
             exhaustively_verify_refcounts: false,
             accounts_file_provider: AccountsFileProvider::default(),
+            storage_access: StorageAccess::default(),
             partitioned_epoch_rewards_config: PartitionedEpochRewardsConfig::default(),
             epoch_accounts_hash_manager: EpochAccountsHashManager::new_invalid(),
             test_skip_rewrites_but_include_in_bank_hash: false,
@@ -2546,6 +2565,11 @@ impl AccountsDb {
                 Self::DEFAULT_MAX_READ_ONLY_CACHE_DATA_SIZE_HI,
             ));
 
+        let storage_access = accounts_db_config
+            .as_ref()
+            .map(|config| config.storage_access)
+            .unwrap_or_default();
+
         let paths_is_empty = paths.is_empty();
         let mut new = Self {
             paths,
@@ -2567,6 +2591,7 @@ impl AccountsDb {
             partitioned_epoch_rewards_config,
             exhaustively_verify_refcounts,
             test_skip_rewrites_but_include_in_bank_hash,
+            storage_access,
             ..Self::default_with_accounts_index(
                 accounts_index,
                 base_working_path,
@@ -3991,6 +4016,8 @@ impl AccountsDb {
         let (_, drop_storage_entries_elapsed) = measure_us!(drop(dead_storages));
         time.stop();
 
+        self.reopen_storage_as_readonly_shrinking_in_progress_ok(shrink_collect.slot);
+
         self.stats
             .dropped_stores
             .fetch_add(dead_storages_len as u64, Ordering::Relaxed);
@@ -4180,6 +4207,26 @@ impl AccountsDb {
         }
 
         dead_storages
+    }
+
+    /// we are done writing to the storage at `slot`. It can be re-opened as read-only if that would help
+    /// system performance.
+    pub(crate) fn reopen_storage_as_readonly_shrinking_in_progress_ok(&self, slot: Slot) {
+        if let Some(storage) = self
+            .storage
+            .get_slot_storage_entry_shrinking_in_progress_ok(slot)
+        {
+            if let Some(new_storage) = storage.reopen_as_readonly() {
+                // consider here the race condition of tx processing having looked up something in the index,
+                // which could return (slot, append vec id). We want the lookup for the storage to get a storage
+                // that works whether the lookup occurs before or after the replace call here.
+                // So, the two storages have to be exactly equivalent wrt offsets, counts, len, id, etc.
+                assert_eq!(storage.append_vec_id(), new_storage.append_vec_id());
+                assert_eq!(storage.accounts.len(), new_storage.accounts.len());
+                self.storage
+                    .replace_storage_with_equivalent(slot, Arc::new(new_storage));
+            }
+        }
     }
 
     /// return a store that can contain 'aligned_total' bytes
@@ -4592,6 +4639,9 @@ impl AccountsDb {
             // Assert: it cannot be the case that we already had an ancient append vec at this slot and
             // yet that ancient append vec does not have room for the accounts stored at this slot currently
             assert_ne!(slot, current_ancient.slot());
+
+            // we filled one up
+            self.reopen_storage_as_readonly_shrinking_in_progress_ok(current_ancient.slot());
 
             // Now we create an ancient append vec at `slot` to store the overflows.
             let (shrink_in_progress_overflow, time_us) = measure_us!(current_ancient
@@ -6457,6 +6507,7 @@ impl AccountsDb {
             // If the above sizing function is correct, just one AppendVec is enough to hold
             // all the data for the slot
             assert!(self.storage.get_slot_storage_entry(slot).is_some());
+            self.reopen_storage_as_readonly_shrinking_in_progress_ok(slot);
         }
 
         // Remove this slot from the cache, which will to AccountsDb's new readers should look like an
