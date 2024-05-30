@@ -544,6 +544,7 @@ where
     )
 }
 
+#[cfg(feature = "dev-context-only-utils")]
 pub(crate) fn bank_to_stream<W>(
     stream: &mut BufWriter<W>,
     bank: &Bank,
@@ -576,6 +577,38 @@ where
             bank,
             snapshot_storages,
         },
+    )
+}
+
+/// Serializes bank snapshot into `stream`
+pub fn serialize_bank_snapshot<W>(
+    stream: &mut BufWriter<W>,
+    bank_fields: BankFieldsToSerialize,
+    accounts_db: &AccountsDb,
+    account_storage_entries: &[Vec<Arc<AccountStorageEntry>>],
+    incremental_snapshot_persistence: Option<&BankIncrementalSnapshotPersistence>,
+    epoch_accounts_hash: Option<EpochAccountsHash>,
+) -> Result<(), Error>
+where
+    W: Write,
+{
+    let slot = bank_fields.slot;
+    let lamports_per_signature = bank_fields.fee_rate_governor.lamports_per_signature;
+    let serializable_bank = SerializableVersionedBank::from(bank_fields);
+    let serializable_accounts_db = SerializableAccountsDb::<'_> {
+        accounts_db,
+        slot,
+        account_storage_entries,
+    };
+    bincode::serialize_into(
+        stream,
+        &(
+            serializable_bank,
+            serializable_accounts_db,
+            lamports_per_signature,
+            incremental_snapshot_persistence,
+            epoch_accounts_hash,
+        ),
     )
 }
 
@@ -681,23 +714,26 @@ pub fn reserialize_bank_with_new_accounts_hash(
     found
 }
 
+#[cfg(feature = "dev-context-only-utils")]
 struct SerializableBankAndStorage<'a> {
     bank: &'a Bank,
     snapshot_storages: &'a [Vec<Arc<AccountStorageEntry>>],
 }
 
+#[cfg(feature = "dev-context-only-utils")]
 impl<'a> Serialize for SerializableBankAndStorage<'a> {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where
         S: serde::ser::Serializer,
     {
+        let slot = self.bank.slot();
         let fields = self.bank.get_fields_to_serialize();
         let lamports_per_signature = fields.fee_rate_governor.lamports_per_signature;
         let bank_fields_to_serialize = (
             SerializableVersionedBank::from(fields),
             SerializableAccountsDb::<'_> {
                 accounts_db: &self.bank.rc.accounts.accounts_db,
-                slot: self.bank.rc.slot,
+                slot,
                 account_storage_entries: self.snapshot_storages,
             },
             // Additional fields, we manually store the lamps per signature here so that
@@ -741,12 +777,13 @@ impl<'a> Serialize for SerializableBankAndStorageNoExtra<'a> {
     where
         S: serde::ser::Serializer,
     {
+        let slot = self.bank.slot();
         let fields = self.bank.get_fields_to_serialize();
         (
             SerializableVersionedBank::from(fields),
             SerializableAccountsDb::<'_> {
                 accounts_db: &self.bank.rc.accounts.accounts_db,
-                slot: self.bank.rc.slot,
+                slot,
                 account_storage_entries: self.snapshot_storages,
             },
         )
@@ -800,10 +837,9 @@ impl<'a> Serialize for SerializableAccountsDb<'a> {
             .get_accounts_delta_hash(slot)
             .map(Into::into)
             .unwrap_or_else(|| panic!("Missing accounts delta hash entry for slot {slot}"));
-        // NOTE: The accounts hash is calculated in AHV, which is *after* a bank snapshot is taken
-        // (and serialized here).  Thus it is expected that an accounts hash is *not* found for
-        // this slot, and a placeholder value will be used instead.  The real accounts hash will be
-        // set by `reserialize_bank_with_new_accounts_hash` from AHV.
+        // NOTE: This accounts hash is only needed when serializing a full snapshot.
+        // When serializing an incremental snapshot, there will not be a full accounts hash
+        // at `slot`.  In that case, use the default, because it doesn't actually get used.
         let accounts_hash = self
             .accounts_db
             .get_accounts_hash(slot)
@@ -891,7 +927,7 @@ where
         bank_fields.incremental_snapshot_persistence.as_ref(),
     )?;
 
-    let bank_rc = BankRc::new(Accounts::new(Arc::new(accounts_db)), bank_fields.slot);
+    let bank_rc = BankRc::new(Accounts::new(Arc::new(accounts_db)));
     let runtime_config = Arc::new(runtime_config.clone());
 
     // if limit_load_slot_count_from_snapshot is set, then we need to side-step some correctness checks beneath this call

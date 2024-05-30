@@ -168,12 +168,13 @@ use {
             CheckedTransactionDetails, TransactionCheckResult, TransactionLoadResult,
         },
         account_overrides::AccountOverrides,
-        nonce_info::{NonceInfo, NoncePartial},
+        nonce_info::NoncePartial,
         program_loader::load_program_with_pubkey,
         transaction_error_metrics::TransactionErrorMetrics,
         transaction_processing_callback::TransactionProcessingCallback,
         transaction_processor::{
             ExecutionRecordingConfig, TransactionBatchProcessor, TransactionLogMessages,
+            TransactionProcessingConfig,
         },
         transaction_results::{
             TransactionExecutionDetails, TransactionExecutionResult, TransactionResults,
@@ -310,9 +311,6 @@ pub struct BankRc {
     /// Previous checkpoint of this bank
     pub(crate) parent: RwLock<Option<Arc<Bank>>>,
 
-    /// Current slot
-    pub(crate) slot: Slot,
-
     pub(crate) bank_id_generator: Arc<AtomicU64>,
 }
 
@@ -327,18 +325,16 @@ impl AbiExample for BankRc {
             parent: RwLock::new(None),
             // AbiExample for Accounts is specially implemented to contain a storage example
             accounts: AbiExample::example(),
-            slot: AbiExample::example(),
             bank_id_generator: Arc::new(AtomicU64::new(0)),
         }
     }
 }
 
 impl BankRc {
-    pub(crate) fn new(accounts: Accounts, slot: Slot) -> Self {
+    pub(crate) fn new(accounts: Accounts) -> Self {
         Self {
             accounts: Arc::new(accounts),
             parent: RwLock::new(None),
-            slot,
             bank_id_generator: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -499,38 +495,38 @@ pub struct BankFieldsToDeserialize {
 /// new fields can be optionally serialized and optionally deserialized. At some point, the serialization and
 /// deserialization will use a new mechanism or otherwise be in sync more clearly.
 #[derive(Debug)]
-pub(crate) struct BankFieldsToSerialize {
-    pub(crate) blockhash_queue: BlockhashQueue,
-    pub(crate) ancestors: AncestorsForSerialization,
-    pub(crate) hash: Hash,
-    pub(crate) parent_hash: Hash,
-    pub(crate) parent_slot: Slot,
-    pub(crate) hard_forks: HardForks,
-    pub(crate) transaction_count: u64,
-    pub(crate) tick_height: u64,
-    pub(crate) signature_count: u64,
-    pub(crate) capitalization: u64,
-    pub(crate) max_tick_height: u64,
-    pub(crate) hashes_per_tick: Option<u64>,
-    pub(crate) ticks_per_slot: u64,
-    pub(crate) ns_per_slot: u128,
-    pub(crate) genesis_creation_time: UnixTimestamp,
-    pub(crate) slots_per_year: f64,
-    pub(crate) slot: Slot,
-    pub(crate) epoch: Epoch,
-    pub(crate) block_height: u64,
-    pub(crate) collector_id: Pubkey,
-    pub(crate) collector_fees: u64,
-    pub(crate) fee_calculator: FeeCalculator,
-    pub(crate) fee_rate_governor: FeeRateGovernor,
-    pub(crate) collected_rent: u64,
-    pub(crate) rent_collector: RentCollector,
-    pub(crate) epoch_schedule: EpochSchedule,
-    pub(crate) inflation: Inflation,
-    pub(crate) stakes: StakesEnum,
-    pub(crate) epoch_stakes: HashMap<Epoch, EpochStakes>,
-    pub(crate) is_delta: bool,
-    pub(crate) accounts_data_len: u64,
+pub struct BankFieldsToSerialize {
+    pub blockhash_queue: BlockhashQueue,
+    pub ancestors: AncestorsForSerialization,
+    pub hash: Hash,
+    pub parent_hash: Hash,
+    pub parent_slot: Slot,
+    pub hard_forks: HardForks,
+    pub transaction_count: u64,
+    pub tick_height: u64,
+    pub signature_count: u64,
+    pub capitalization: u64,
+    pub max_tick_height: u64,
+    pub hashes_per_tick: Option<u64>,
+    pub ticks_per_slot: u64,
+    pub ns_per_slot: u128,
+    pub genesis_creation_time: UnixTimestamp,
+    pub slots_per_year: f64,
+    pub slot: Slot,
+    pub epoch: Epoch,
+    pub block_height: u64,
+    pub collector_id: Pubkey,
+    pub collector_fees: u64,
+    pub fee_calculator: FeeCalculator,
+    pub fee_rate_governor: FeeRateGovernor,
+    pub collected_rent: u64,
+    pub rent_collector: RentCollector,
+    pub epoch_schedule: EpochSchedule,
+    pub inflation: Inflation,
+    pub stakes: StakesEnum,
+    pub epoch_stakes: HashMap<Epoch, EpochStakes>,
+    pub is_delta: bool,
+    pub accounts_data_len: u64,
 }
 
 // Can't derive PartialEq because RwLock doesn't implement PartialEq
@@ -633,6 +629,47 @@ impl PartialEq for Bank {
             && *stakes_cache.stakes() == *other.stakes_cache.stakes()
             && epoch_stakes == &other.epoch_stakes
             && is_delta.load(Relaxed) == other.is_delta.load(Relaxed)
+    }
+}
+
+#[cfg(feature = "dev-context-only-utils")]
+impl BankFieldsToSerialize {
+    /// Create a new BankFieldsToSerialize where basically every field is defaulted.
+    /// Only use for tests; many of the fields are invalid!
+    pub fn default_for_tests() -> Self {
+        Self {
+            blockhash_queue: BlockhashQueue::default(),
+            ancestors: AncestorsForSerialization::default(),
+            hash: Hash::default(),
+            parent_hash: Hash::default(),
+            parent_slot: Slot::default(),
+            hard_forks: HardForks::default(),
+            transaction_count: u64::default(),
+            tick_height: u64::default(),
+            signature_count: u64::default(),
+            capitalization: u64::default(),
+            max_tick_height: u64::default(),
+            hashes_per_tick: Option::default(),
+            ticks_per_slot: u64::default(),
+            ns_per_slot: u128::default(),
+            genesis_creation_time: UnixTimestamp::default(),
+            slots_per_year: f64::default(),
+            slot: Slot::default(),
+            epoch: Epoch::default(),
+            block_height: u64::default(),
+            collector_id: Pubkey::default(),
+            collector_fees: u64::default(),
+            fee_calculator: FeeCalculator::default(),
+            fee_rate_governor: FeeRateGovernor::default(),
+            collected_rent: u64::default(),
+            rent_collector: RentCollector::default(),
+            epoch_schedule: EpochSchedule::default(),
+            inflation: Inflation::default(),
+            stakes: Stakes::<Delegation>::default().into(),
+            epoch_stakes: HashMap::default(),
+            is_delta: bool::default(),
+            accounts_data_len: u64::default(),
+        }
     }
 }
 
@@ -897,7 +934,7 @@ impl Bank {
         let mut bank = Self {
             skipped_rewrites: Mutex::default(),
             incremental_snapshot_persistence: None,
-            rc: BankRc::new(accounts, Slot::default()),
+            rc: BankRc::new(accounts),
             status_cache: Arc::<RwLock<BankStatusCache>>::default(),
             blockhash_queue: RwLock::<BlockhashQueue>::default(),
             ancestors: Ancestors::default(),
@@ -1098,7 +1135,6 @@ impl Bank {
             BankRc {
                 accounts: Arc::new(Accounts::new(accounts_db)),
                 parent: RwLock::new(Some(Arc::clone(&parent))),
-                slot,
                 bank_id_generator: Arc::clone(&parent.rc.bank_id_generator),
             }
         });
@@ -1493,7 +1529,6 @@ impl Bank {
     }
 
     /// Create a bank from explicit arguments and deserialized fields from snapshot
-    #[allow(clippy::float_cmp)]
     pub(crate) fn new_from_fields(
         bank_rc: BankRc,
         genesis_config: &GenesisConfig,
@@ -3039,10 +3074,8 @@ impl Bank {
             blockhash_queue.get_lamports_per_signature(message.recent_blockhash())
         }
         .or_else(|| {
-            self.check_message_for_nonce(message)
-                .and_then(|(address, account)| {
-                    NoncePartial::new(address, account).lamports_per_signature()
-                })
+            self.load_message_nonce_account(message)
+                .map(|(_nonce, nonce_data)| nonce_data.get_lamports_per_signature())
         })?;
         Some(self.get_fee_for_message_with_lamports_per_signature(message, lamports_per_signature))
     }
@@ -3492,20 +3525,17 @@ impl Bank {
         error_counters: &mut TransactionErrorMetrics,
     ) -> TransactionCheckResult {
         let recent_blockhash = tx.message().recent_blockhash();
-        if hash_queue.is_hash_valid_for_age(recent_blockhash, max_age) {
+        if let Some(hash_info) = hash_queue.get_hash_info_if_valid(recent_blockhash, max_age) {
             Ok(CheckedTransactionDetails {
                 nonce: None,
-                lamports_per_signature: hash_queue
-                    .get_lamports_per_signature(tx.message().recent_blockhash()),
+                lamports_per_signature: hash_info.lamports_per_signature(),
             })
-        } else if let Some((address, account)) =
-            self.check_transaction_for_nonce(tx, next_durable_nonce)
+        } else if let Some((nonce, nonce_data)) =
+            self.check_and_load_message_nonce_account(tx.message(), next_durable_nonce)
         {
-            let nonce = NoncePartial::new(address, account);
-            let lamports_per_signature = nonce.lamports_per_signature();
             Ok(CheckedTransactionDetails {
                 nonce: Some(nonce),
-                lamports_per_signature,
+                lamports_per_signature: nonce_data.get_lamports_per_signature(),
             })
         } else {
             error_counters.blockhash_not_found += 1;
@@ -3560,7 +3590,10 @@ impl Bank {
             .is_hash_valid_for_age(hash, max_age)
     }
 
-    fn check_message_for_nonce(&self, message: &SanitizedMessage) -> Option<TransactionAccount> {
+    fn load_message_nonce_account(
+        &self,
+        message: &SanitizedMessage,
+    ) -> Option<(NoncePartial, nonce::state::Data)> {
         let nonce_address = message.get_durable_nonce()?;
         let nonce_account = self.get_account_with_fixed_root(nonce_address)?;
         let nonce_data =
@@ -3573,17 +3606,17 @@ impl Bank {
             return None;
         }
 
-        Some((*nonce_address, nonce_account))
+        Some((NoncePartial::new(*nonce_address, nonce_account), nonce_data))
     }
 
-    fn check_transaction_for_nonce(
+    fn check_and_load_message_nonce_account(
         &self,
-        tx: &SanitizedTransaction,
+        message: &SanitizedMessage,
         next_durable_nonce: &DurableNonce,
-    ) -> Option<TransactionAccount> {
-        let nonce_is_advanceable = tx.message().recent_blockhash() != next_durable_nonce.as_hash();
+    ) -> Option<(NoncePartial, nonce::state::Data)> {
+        let nonce_is_advanceable = message.recent_blockhash() != next_durable_nonce.as_hash();
         if nonce_is_advanceable {
-            self.check_message_for_nonce(tx.message())
+            self.load_message_nonce_account(message)
         } else {
             None
         }
@@ -3674,6 +3707,13 @@ impl Bank {
         debug!("check: {}us", check_time.as_us());
         timings.saturating_add_in_place(ExecuteTimingType::CheckUs, check_time.as_us());
 
+        let processing_config = TransactionProcessingConfig {
+            account_overrides,
+            limit_to_load_programs,
+            log_messages_bytes_limit,
+            recording_config,
+        };
+
         let sanitized_output = self
             .transaction_processor
             .load_and_execute_sanitized_transactions(
@@ -3681,11 +3721,8 @@ impl Bank {
                 sanitized_txs,
                 &mut check_results,
                 &mut error_counters,
-                recording_config,
                 timings,
-                account_overrides,
-                log_messages_bytes_limit,
-                limit_to_load_programs,
+                &processing_config,
             );
 
         let mut signature_count = 0;
@@ -3886,7 +3923,6 @@ impl Bank {
         txs: &[SanitizedTransaction],
         execution_results: &[TransactionExecutionResult],
     ) -> Vec<Result<()>> {
-        let hash_queue = self.blockhash_queue.read().unwrap();
         let mut fees = 0;
 
         let results = txs
@@ -3894,21 +3930,16 @@ impl Bank {
             .zip(execution_results)
             .map(|(tx, execution_result)| {
                 let message = tx.message();
-                let (execution_status, is_nonce, lamports_per_signature) =
-                    Self::get_details_from_execution_result(
-                        &hash_queue,
-                        execution_result,
-                        message.recent_blockhash(),
-                    )?;
-                let fee = self.get_fee_for_message_with_lamports_per_signature(
-                    message,
-                    lamports_per_signature,
-                );
+                let details = match &execution_result {
+                    TransactionExecutionResult::Executed { details, .. } => details,
+                    TransactionExecutionResult::NotExecuted(err) => return Err(err.clone()),
+                };
 
+                let fee = details.fee_details.total_fee();
                 self.check_execution_status_and_charge_fee(
                     message,
-                    execution_status,
-                    is_nonce,
+                    &details.status,
+                    details.is_nonce,
                     fee,
                 )?;
 
@@ -3927,7 +3958,6 @@ impl Bank {
         txs: &[SanitizedTransaction],
         execution_results: &[TransactionExecutionResult],
     ) -> Vec<Result<()>> {
-        let hash_queue = self.blockhash_queue.read().unwrap();
         let mut accumulated_fee_details = FeeDetails::default();
 
         let results = txs
@@ -3935,34 +3965,20 @@ impl Bank {
             .zip(execution_results)
             .map(|(tx, execution_result)| {
                 let message = tx.message();
-                let (execution_status, is_nonce, lamports_per_signature) =
-                    Self::get_details_from_execution_result(
-                        &hash_queue,
-                        execution_result,
-                        message.recent_blockhash(),
-                    )?;
+                let details = match &execution_result {
+                    TransactionExecutionResult::Executed { details, .. } => details,
+                    TransactionExecutionResult::NotExecuted(err) => return Err(err.clone()),
+                };
 
-                if !FeeStructure::to_clear_transaction_fee(lamports_per_signature) {
-                    let fee_details = self.fee_structure().calculate_fee_details(
-                        message,
-                        &process_compute_budget_instructions(message.program_instructions_iter())
-                            .unwrap_or_default()
-                            .into(),
-                        self.feature_set
-                            .is_active(&include_loaded_accounts_data_size_in_fee_calculation::id()),
-                        self.feature_set
-                            .is_active(&remove_rounding_in_fee_calculation::id()),
-                    );
+                self.check_execution_status_and_charge_fee(
+                    message,
+                    &details.status,
+                    details.is_nonce,
+                    details.fee_details.total_fee(),
+                )?;
 
-                    self.check_execution_status_and_charge_fee(
-                        message,
-                        execution_status,
-                        is_nonce,
-                        fee_details.total_fee(),
-                    )?;
+                accumulated_fee_details.accumulate(&details.fee_details);
 
-                    accumulated_fee_details.accumulate(&fee_details);
-                }
                 Ok(())
             })
             .collect();
@@ -3972,33 +3988,6 @@ impl Bank {
             .unwrap()
             .accumulate(&accumulated_fee_details);
         results
-    }
-
-    fn get_details_from_execution_result<'a>(
-        hash_queue_readonly: &RwLockReadGuard<'a, BlockhashQueue>,
-        execution_result: &'a TransactionExecutionResult,
-        transaction_blockhash: &Hash,
-    ) -> Result<(&'a transaction::Result<()>, bool, u64)> {
-        let (execution_status, durable_nonce_fee) = match &execution_result {
-            TransactionExecutionResult::Executed { details, .. } => {
-                Ok((&details.status, details.durable_nonce_fee.as_ref()))
-            }
-            TransactionExecutionResult::NotExecuted(err) => Err(err.clone()),
-        }?;
-
-        let (lamports_per_signature, is_nonce) = durable_nonce_fee
-            .map(|durable_nonce_fee| durable_nonce_fee.lamports_per_signature())
-            .map(|maybe_lamports_per_signature| (maybe_lamports_per_signature, true))
-            .unwrap_or_else(|| {
-                (
-                    hash_queue_readonly.get_lamports_per_signature(transaction_blockhash),
-                    false,
-                )
-            });
-
-        let lamports_per_signature =
-            lamports_per_signature.ok_or(TransactionError::BlockhashNotFound)?;
-        Ok((execution_status, is_nonce, lamports_per_signature))
     }
 
     fn check_execution_status_and_charge_fee(
@@ -5031,7 +5020,7 @@ impl Bank {
         new_account: &AccountSharedData,
     ) {
         let old_account_data_size =
-            if let Some(old_account) = self.get_account_with_fixed_root(pubkey) {
+            if let Some(old_account) = self.get_account_with_fixed_root_no_cache(pubkey) {
                 match new_account.lamports().cmp(&old_account.lamports()) {
                     std::cmp::Ordering::Greater => {
                         let increased = new_account.lamports() - old_account.lamports();
@@ -5073,7 +5062,7 @@ impl Bank {
     }
 
     fn withdraw(&self, pubkey: &Pubkey, lamports: u64) -> Result<()> {
-        match self.get_account_with_fixed_root(pubkey) {
+        match self.get_account_with_fixed_root_no_cache(pubkey) {
             Some(mut account) => {
                 let min_balance = match get_system_account_kind(&account) {
                     Some(SystemAccountKind::Nonce) => self
@@ -5197,6 +5186,25 @@ impl Bank {
                 .unwrap()
                 .register(new_hard_fork_slot);
         }
+    }
+
+    pub fn get_account_with_fixed_root_no_cache(
+        &self,
+        pubkey: &Pubkey,
+    ) -> Option<AccountSharedData> {
+        self.load_account_with(pubkey, |_| false)
+            .map(|(acc, _slot)| acc)
+    }
+
+    fn load_account_with(
+        &self,
+        pubkey: &Pubkey,
+        callback: impl for<'local> Fn(&'local AccountSharedData) -> bool,
+    ) -> Option<(AccountSharedData, Slot)> {
+        self.rc
+            .accounts
+            .accounts_db
+            .load_account_with(&self.ancestors, pubkey, callback)
     }
 
     // Hi! leaky abstraction here....
@@ -7311,7 +7319,9 @@ pub mod test_utils {
     ) -> std::result::Result<u64, LamportsError> {
         // This doesn't collect rents intentionally.
         // Rents should only be applied to actual TXes
-        let mut account = bank.get_account_with_fixed_root(pubkey).unwrap_or_default();
+        let mut account = bank
+            .get_account_with_fixed_root_no_cache(pubkey)
+            .unwrap_or_default();
         account.checked_add_lamports(lamports)?;
         bank.store_account(pubkey, &account);
         Ok(account.lamports())
