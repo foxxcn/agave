@@ -623,9 +623,9 @@ checksum = "9d297deb1925b89f2ccc13d7635fa0714f12c87adce1c75356b39ca9b7178567"
 
 [[package]]
 name = "base64"
-version = "0.22.0"
+version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9475866fec1451be56a3c2400fd081ff546538961565ccb5b7142cbd22bc7a51"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "bincode"
@@ -3098,9 +3098,9 @@ dependencies = [
 
 [[package]]
 name = "num-traits"
-version = "0.2.18"
+version = "0.2.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da0df0e5185db44f69b44f26786fe401b6c293d1907744beaa7fa62b2e5a517a"
+checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
 ]
@@ -3602,9 +3602,9 @@ dependencies = [
 
 [[package]]
 name = "proc-macro2"
-version = "1.0.79"
+version = "1.0.84"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e835ff2298f5721608eb1a980ecaee1aef2c132bf95ecc026a11b7bf3c01c02e"
+checksum = "ec96c6a92621310b51366f1e28d05ef11489516e93be030060e5fc12024a49d6"
 dependencies = [
  "unicode-ident",
 ]
@@ -4244,9 +4244,9 @@ dependencies = [
 
 [[package]]
 name = "semver"
-version = "1.0.22"
+version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92d43fe69e652f3df9bdc2b85b2854a0825b86e4fb76bc44d945137d053639ca"
+checksum = "61697e0a1c7e512e84a621326239844a24d8207b4669b41bc18b32ea5cbf988b"
 
 [[package]]
 name = "seqlock"
@@ -4582,7 +4582,7 @@ name = "solana-account-decoder"
 version = "2.0.0"
 dependencies = [
  "Inflector",
- "base64 0.22.0",
+ "base64 0.22.1",
  "bincode",
  "bs58",
  "bv",
@@ -4726,7 +4726,9 @@ dependencies = [
  "libsecp256k1 0.6.0",
  "log",
  "scopeguard",
+ "solana-compute-budget",
  "solana-measure",
+ "solana-poseidon",
  "solana-program-runtime",
  "solana-sdk",
  "solana-zk-token-sdk",
@@ -4795,7 +4797,7 @@ name = "solana-cli-output"
 version = "2.0.0"
 dependencies = [
  "Inflector",
- "base64 0.22.0",
+ "base64 0.22.1",
  "chrono",
  "clap 2.33.3",
  "console",
@@ -4847,6 +4849,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "solana-compute-budget"
+version = "2.0.0"
+dependencies = [
+ "solana-sdk",
+]
+
+[[package]]
 name = "solana-compute-budget-program"
 version = "2.0.0"
 dependencies = [
@@ -4890,7 +4899,7 @@ name = "solana-core"
 version = "2.0.0"
 dependencies = [
  "ahash 0.8.10",
- "base64 0.22.0",
+ "base64 0.22.1",
  "bincode",
  "bs58",
  "bytes",
@@ -4921,6 +4930,7 @@ dependencies = [
  "solana-accounts-db",
  "solana-bloom",
  "solana-client",
+ "solana-compute-budget",
  "solana-cost-model",
  "solana-entry",
  "solana-geyser-plugin-manager",
@@ -4969,11 +4979,11 @@ dependencies = [
  "rustc_version",
  "solana-address-lookup-table-program",
  "solana-bpf-loader-program",
+ "solana-compute-budget",
  "solana-compute-budget-program",
  "solana-config-program",
  "solana-loader-v4-program",
  "solana-metrics",
- "solana-program-runtime",
  "solana-sdk",
  "solana-stake-program",
  "solana-system-program",
@@ -5196,6 +5206,7 @@ name = "solana-loader-v4-program"
 version = "2.0.0"
 dependencies = [
  "log",
+ "solana-compute-budget",
  "solana-measure",
  "solana-program-runtime",
  "solana-sdk",
@@ -5309,6 +5320,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "solana-poseidon"
+version = "2.0.0"
+dependencies = [
+ "ark-bn254",
+ "light-poseidon",
+ "thiserror",
+]
+
+[[package]]
 name = "solana-program"
 version = "2.0.0"
 dependencies = [
@@ -5316,7 +5336,7 @@ dependencies = [
  "ark-ec",
  "ark-ff",
  "ark-serialize",
- "base64 0.22.0",
+ "base64 0.22.1",
  "bincode",
  "bitflags 2.5.0",
  "blake3",
@@ -5334,7 +5354,6 @@ dependencies = [
  "js-sys",
  "lazy_static",
  "libsecp256k1 0.6.0",
- "light-poseidon",
  "log",
  "memoffset 0.9.0",
  "num-bigint 0.4.5",
@@ -5358,7 +5377,7 @@ dependencies = [
 name = "solana-program-runtime"
 version = "2.0.0"
 dependencies = [
- "base64 0.22.0",
+ "base64 0.22.1",
  "bincode",
  "eager",
  "enum-iterator",
@@ -5371,6 +5390,7 @@ dependencies = [
  "rand 0.8.5",
  "rustc_version",
  "serde",
+ "solana-compute-budget",
  "solana-measure",
  "solana-metrics",
  "solana-sdk",
@@ -5384,7 +5404,7 @@ version = "2.0.0"
 dependencies = [
  "assert_matches",
  "async-trait",
- "base64 0.22.0",
+ "base64 0.22.1",
  "bincode",
  "chrono-humanize",
  "crossbeam-channel",
@@ -5395,6 +5415,7 @@ dependencies = [
  "solana-banks-interface",
  "solana-banks-server",
  "solana-bpf-loader-program",
+ "solana-compute-budget",
  "solana-inline-spl",
  "solana-logger",
  "solana-program-runtime",
@@ -5483,7 +5504,7 @@ dependencies = [
 name = "solana-rpc"
 version = "2.0.0"
 dependencies = [
- "base64 0.22.0",
+ "base64 0.22.1",
  "bincode",
  "bs58",
  "crossbeam-channel",
@@ -5541,7 +5562,7 @@ name = "solana-rpc-client"
 version = "2.0.0"
 dependencies = [
  "async-trait",
- "base64 0.22.0",
+ "base64 0.22.1",
  "bincode",
  "bs58",
  "indicatif",
@@ -5566,7 +5587,7 @@ name = "solana-rpc-client-api"
 version = "2.0.0"
 dependencies = [
  "anyhow",
- "base64 0.22.0",
+ "base64 0.22.1",
  "bs58",
  "jsonrpc-core",
  "reqwest",
@@ -5600,7 +5621,7 @@ version = "2.0.0"
 dependencies = [
  "aquamarine",
  "arrayref",
- "base64 0.22.0",
+ "base64 0.22.1",
  "bincode",
  "blake3",
  "bv",
@@ -5639,6 +5660,7 @@ dependencies = [
  "solana-address-lookup-table-program",
  "solana-bpf-loader-program",
  "solana-bucket-map",
+ "solana-compute-budget",
  "solana-compute-budget-program",
  "solana-config-program",
  "solana-cost-model",
@@ -5683,6 +5705,7 @@ dependencies = [
  "solana-accounts-db",
  "solana-bpf-loader-program",
  "solana-cli-output",
+ "solana-compute-budget",
  "solana-ledger",
  "solana-logger",
  "solana-measure",
@@ -5951,6 +5974,7 @@ name = "solana-sbf-rust-poseidon"
 version = "2.0.0"
 dependencies = [
  "array-bytes",
+ "solana-poseidon",
  "solana-program",
 ]
 
@@ -6274,6 +6298,7 @@ dependencies = [
  "serde",
  "serde_derive",
  "solana-bpf-loader-program",
+ "solana-compute-budget",
  "solana-loader-v4-program",
  "solana-measure",
  "solana-metrics",
@@ -6298,7 +6323,7 @@ dependencies = [
 name = "solana-test-validator"
 version = "2.0.0"
 dependencies = [
- "base64 0.22.0",
+ "base64 0.22.1",
  "bincode",
  "crossbeam-channel",
  "log",
@@ -6307,13 +6332,13 @@ dependencies = [
  "solana-accounts-db",
  "solana-cli-output",
  "solana-client",
+ "solana-compute-budget",
  "solana-core",
  "solana-geyser-plugin-manager",
  "solana-gossip",
  "solana-ledger",
  "solana-logger",
  "solana-net-utils",
- "solana-program-runtime",
  "solana-program-test",
  "solana-rpc",
  "solana-rpc-client",
@@ -6364,7 +6389,7 @@ name = "solana-transaction-metrics-tracker"
 version = "2.0.0"
 dependencies = [
  "Inflector",
- "base64 0.22.0",
+ "base64 0.22.1",
  "bincode",
  "lazy_static",
  "log",
@@ -6378,7 +6403,7 @@ name = "solana-transaction-status"
 version = "2.0.0"
 dependencies = [
  "Inflector",
- "base64 0.22.0",
+ "base64 0.22.1",
  "bincode",
  "borsh 1.5.0",
  "bs58",
@@ -6556,7 +6581,7 @@ name = "solana-zk-token-sdk"
 version = "2.0.0"
 dependencies = [
  "aes-gcm-siv",
- "base64 0.22.0",
+ "base64 0.22.1",
  "bincode",
  "bytemuck",
  "byteorder 1.5.0",
@@ -6870,9 +6895,9 @@ dependencies = [
 
 [[package]]
 name = "subtle"
-version = "2.4.1"
+version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6bdef32e8150c2a081110b42772ffe7d7c9032b606bc226c8260fd97e0976601"
+checksum = "81cdd64d312baedb58e21336b31bc043b77e01cc99033ce76ef539f78e965ebc"
 
 [[package]]
 name = "symlink"

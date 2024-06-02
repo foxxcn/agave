@@ -89,12 +89,12 @@ use {
         storable_accounts::StorableAccounts,
     },
     solana_bpf_loader_program::syscalls::create_program_runtime_environment_v1,
+    solana_compute_budget::compute_budget_processor::process_compute_budget_instructions,
     solana_cost_model::cost_tracker::CostTracker,
     solana_loader_v4_program::create_program_runtime_environment_v2,
     solana_measure::{measure, measure::Measure, measure_us},
     solana_perf::perf_libs,
     solana_program_runtime::{
-        compute_budget_processor::process_compute_budget_instructions,
         invoke_context::BuiltinFunctionWithContext,
         loaded_programs::{
             ProgramCache, ProgramCacheEntry, ProgramCacheEntryOwner, ProgramCacheEntryType,
@@ -124,7 +124,7 @@ use {
             remove_rounding_in_fee_calculation, reward_full_priority_fee, FeatureSet,
         },
         fee::{FeeDetails, FeeStructure},
-        fee_calculator::{FeeCalculator, FeeRateGovernor},
+        fee_calculator::FeeRateGovernor,
         genesis_config::{ClusterType, GenesisConfig},
         hard_forks::HardForks,
         hash::{extend_and_hash, hashv, Hash},
@@ -140,8 +140,7 @@ use {
         packet::PACKET_DATA_SIZE,
         precompiles::get_precompiles,
         pubkey::Pubkey,
-        rent::RentDue,
-        rent_collector::{CollectedInfo, RentCollector, RENT_EXEMPT_RENT_EPOCH},
+        rent_collector::{CollectedInfo, RentCollector},
         rent_debits::RentDebits,
         reserved_account_keys::ReservedAccountKeys,
         reward_info::RewardInfo,
@@ -165,7 +164,8 @@ use {
     },
     solana_svm::{
         account_loader::{
-            CheckedTransactionDetails, TransactionCheckResult, TransactionLoadResult,
+            collect_rent_from_account, CheckedTransactionDetails, TransactionCheckResult,
+            TransactionLoadResult,
         },
         account_overrides::AccountOverrides,
         nonce_info::NoncePartial,
@@ -177,7 +177,8 @@ use {
             TransactionProcessingConfig,
         },
         transaction_results::{
-            TransactionExecutionDetails, TransactionExecutionResult, TransactionResults,
+            TransactionExecutionDetails, TransactionExecutionResult,
+            TransactionLoadedAccountsStats, TransactionResults,
         },
     },
     solana_system_program::{get_system_account_kind, SystemAccountKind},
@@ -472,7 +473,6 @@ pub struct BankFieldsToDeserialize {
     pub(crate) block_height: u64,
     pub(crate) collector_id: Pubkey,
     pub(crate) collector_fees: u64,
-    pub(crate) fee_calculator: FeeCalculator,
     pub(crate) fee_rate_governor: FeeRateGovernor,
     pub(crate) collected_rent: u64,
     pub(crate) rent_collector: RentCollector,
@@ -517,7 +517,6 @@ pub struct BankFieldsToSerialize {
     pub block_height: u64,
     pub collector_id: Pubkey,
     pub collector_fees: u64,
-    pub fee_calculator: FeeCalculator,
     pub fee_rate_governor: FeeRateGovernor,
     pub collected_rent: u64,
     pub rent_collector: RentCollector,
@@ -659,7 +658,6 @@ impl BankFieldsToSerialize {
             block_height: u64::default(),
             collector_id: Pubkey::default(),
             collector_fees: u64::default(),
-            fee_calculator: FeeCalculator::default(),
             fee_rate_governor: FeeRateGovernor::default(),
             collected_rent: u64::default(),
             rent_collector: RentCollector::default(),
@@ -1723,7 +1721,6 @@ impl Bank {
             block_height: self.block_height,
             collector_id: self.collector_id,
             collector_fees: self.collector_fees.load(Relaxed),
-            fee_calculator: FeeCalculator::default(),
             fee_rate_governor: self.fee_rate_governor.clone(),
             collected_rent: self.collected_rent.load(Relaxed),
             rent_collector: self.rent_collector.clone(),
@@ -4139,11 +4136,34 @@ impl Bank {
             update_transaction_statuses_time.as_us(),
         );
 
+        let loaded_accounts_stats = Self::collect_loaded_accounts_stats(loaded_txs);
+        assert_eq!(
+            loaded_accounts_stats.len(),
+            execution_results.len(),
+            "loaded_account_stats and execution_results are not the same size"
+        );
+
         TransactionResults {
             fee_collection_results,
+            loaded_accounts_stats,
             execution_results,
             rent_debits,
         }
+    }
+
+    fn collect_loaded_accounts_stats(
+        loaded_txs: &[TransactionLoadResult],
+    ) -> Vec<Result<TransactionLoadedAccountsStats>> {
+        loaded_txs
+            .iter()
+            .map(|load_result| match load_result {
+                Ok(loaded_tx) => Ok(TransactionLoadedAccountsStats {
+                    loaded_accounts_data_size: loaded_tx.loaded_accounts_data_size,
+                    loaded_accounts_count: loaded_tx.accounts.len(),
+                }),
+                Err(err) => Err(err.clone()),
+            })
+            .collect()
     }
 
     fn collect_rent(
@@ -4402,28 +4422,14 @@ impl Bank {
                 .test_skip_rewrites_but_include_in_bank_hash;
         let mut skipped_rewrites = Vec::default();
         for (pubkey, account, _loaded_slot) in accounts.iter_mut() {
-            let rent_collected_info = if self.should_collect_rent() {
-                let (rent_collected_info, measure) = measure!(self
-                    .rent_collector
-                    .collect_from_existing_account(pubkey, account));
-                time_collecting_rent_us += measure.as_us();
-                rent_collected_info
-            } else {
-                // When rent fee collection is disabled, we won't collect rent for any account. If there
-                // are any rent paying accounts, their `rent_epoch` won't change either. However, if the
-                // account itself is rent-exempted but its `rent_epoch` is not u64::MAX, we will set its
-                // `rent_epoch` to u64::MAX. In such case, the behavior stays the same as before.
-                if account.rent_epoch() != RENT_EXEMPT_RENT_EPOCH
-                    && self.rent_collector.get_rent_due(
-                        account.lamports(),
-                        account.data().len(),
-                        account.rent_epoch(),
-                    ) == RentDue::Exempt
-                {
-                    account.set_rent_epoch(RENT_EXEMPT_RENT_EPOCH);
-                }
-                CollectedInfo::default()
-            };
+            let (rent_collected_info, measure) = measure!(collect_rent_from_account(
+                &self.feature_set,
+                &self.rent_collector,
+                pubkey,
+                account
+            ));
+            time_collecting_rent_us += measure.as_us();
+
             // only store accounts where we collected rent
             // but get the hash for all these accounts even if collected rent is 0 (= not updated).
             // Also, there's another subtle side-effect from rewrites: this

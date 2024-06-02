@@ -15,10 +15,10 @@ use {
     log::debug,
     percentage::Percentage,
     solana_bpf_loader_program::syscalls::create_program_runtime_environment_v1,
+    solana_compute_budget::compute_budget::ComputeBudget,
     solana_loader_v4_program::create_program_runtime_environment_v2,
     solana_measure::measure::Measure,
     solana_program_runtime::{
-        compute_budget::ComputeBudget,
         invoke_context::{EnvironmentConfig, InvokeContext},
         loaded_programs::{
             ForkGraph, ProgramCache, ProgramCacheEntry, ProgramCacheForTxBatch,
@@ -1001,6 +1001,7 @@ mod tests {
             fee_details: FeeDetails::default(),
             rent: 0,
             rent_debits: RentDebits::default(),
+            loaded_accounts_data_size: 32,
         };
 
         let mut processing_config = TransactionProcessingConfig::default();
@@ -1126,6 +1127,7 @@ mod tests {
             fee_details: FeeDetails::default(),
             rent: 0,
             rent_debits: RentDebits::default(),
+            loaded_accounts_data_size: 0,
         };
 
         let processing_config = TransactionProcessingConfig {
