@@ -254,6 +254,7 @@ impl Accounts {
         num: usize,
         filter_by_address: &HashSet<Pubkey>,
         filter: AccountAddressFilter,
+        sort_results: bool,
     ) -> ScanResult<Vec<(Pubkey, u64)>> {
         if num == 0 {
             return Ok(vec![]);
@@ -287,7 +288,7 @@ impl Accounts {
                     account_balances.push(Reverse((account.lamports(), *pubkey)));
                 }
             },
-            &ScanConfig::default(),
+            &ScanConfig::new(!sort_results),
         )?;
         Ok(account_balances
             .into_sorted_vec()
@@ -480,6 +481,7 @@ impl Accounts {
         &self,
         ancestors: &Ancestors,
         bank_id: BankId,
+        sort_results: bool,
     ) -> ScanResult<Vec<PubkeyAccountSlot>> {
         let mut collector = Vec::new();
         self.accounts_db
@@ -493,7 +495,7 @@ impl Accounts {
                         collector.push((*pubkey, account, slot))
                     }
                 },
-                &ScanConfig::default(),
+                &ScanConfig::new(!sort_results),
             )
             .map(|_| collector)
     }
@@ -503,12 +505,17 @@ impl Accounts {
         ancestors: &Ancestors,
         bank_id: BankId,
         scan_func: F,
+        sort_results: bool,
     ) -> ScanResult<()>
     where
         F: FnMut(Option<(&Pubkey, AccountSharedData, Slot)>),
     {
-        self.accounts_db
-            .scan_accounts(ancestors, bank_id, scan_func, &ScanConfig::default())
+        self.accounts_db.scan_accounts(
+            ancestors,
+            bank_id,
+            scan_func,
+            &ScanConfig::new(!sort_results),
+        )
     }
 
     pub fn hold_range_in_memory<R>(
@@ -534,7 +541,7 @@ impl Accounts {
             "", // disable logging of this. We now parallelize it and this results in multiple parallel logs
             ancestors,
             range,
-            &ScanConfig::new(true),
+            &ScanConfig::default(),
             |option| Self::load_with_slot(&mut collector, option),
         );
         collector
@@ -596,7 +603,6 @@ impl Accounts {
     /// This function will prevent multiple threads from modifying the same account state at the
     /// same time
     #[must_use]
-    #[allow(clippy::needless_collect)]
     pub fn lock_accounts<'a>(
         &self,
         txs: impl Iterator<Item = &'a SanitizedTransaction>,
@@ -609,7 +615,6 @@ impl Accounts {
     }
 
     #[must_use]
-    #[allow(clippy::needless_collect)]
     pub fn lock_accounts_with_results<'a>(
         &self,
         txs: impl Iterator<Item = &'a SanitizedTransaction>,
@@ -646,7 +651,6 @@ impl Accounts {
     }
 
     /// Once accounts are unlocked, new transactions that modify that state can enter the pipeline
-    #[allow(clippy::needless_collect)]
     pub fn unlock_accounts<'a>(
         &self,
         txs_and_results: impl Iterator<Item = (&'a SanitizedTransaction, &'a Result<()>)>,
@@ -719,11 +723,14 @@ impl Accounts {
                 TransactionExecutionResult::NotExecuted(_) => continue,
             };
 
-            let maybe_nonce = match (execution_status, &loaded_transaction.nonce) {
-                (Ok(_), _) => None, // Success, don't do any additional nonce processing
-                (Err(_), Some(nonce)) => {
-                    Some((nonce, true /* rollback */))
-                }
+            enum AccountCollectionMode<'a> {
+                Normal,
+                FailedWithNonce { nonce: &'a NonceFull },
+            }
+
+            let collection_mode = match (execution_status, &loaded_transaction.nonce) {
+                (Ok(_), _) => AccountCollectionMode::Normal,
+                (Err(_), Some(nonce)) => AccountCollectionMode::FailedWithNonce { nonce },
                 (Err(_), None) => {
                     // Fees for failed transactions which don't use durable nonces are
                     // deducted in Bank::filter_program_errors_and_collect_fee
@@ -753,18 +760,25 @@ impl Accounts {
                 .filter(|(i, _)| is_storable_account(message, *i))
             {
                 if message.is_writable(i) {
-                    let is_fee_payer = i == 0;
-                    let is_nonce_account = prepare_if_nonce_account(
-                        address,
-                        account,
-                        execution_status,
-                        is_fee_payer,
-                        maybe_nonce,
-                        durable_nonce,
-                        lamports_per_signature,
-                    );
+                    let should_collect_account = match collection_mode {
+                        AccountCollectionMode::Normal => true,
+                        AccountCollectionMode::FailedWithNonce { nonce } => {
+                            let is_fee_payer = i == 0;
+                            let is_nonce_account = address == nonce.address();
+                            post_process_failed_nonce(
+                                account,
+                                is_fee_payer,
+                                is_nonce_account,
+                                nonce,
+                                durable_nonce,
+                                lamports_per_signature,
+                            );
 
-                    if execution_status.is_ok() || is_nonce_account || is_fee_payer {
+                            is_fee_payer || is_nonce_account
+                        }
+                    };
+
+                    if should_collect_account {
                         // Add to the accounts to store
                         accounts.push((&*address, &*account));
                         transactions.push(Some(tx));
@@ -776,56 +790,41 @@ impl Accounts {
     }
 }
 
-fn prepare_if_nonce_account(
-    address: &Pubkey,
+fn post_process_failed_nonce(
     account: &mut AccountSharedData,
-    execution_result: &Result<()>,
     is_fee_payer: bool,
-    maybe_nonce: Option<(&NonceFull, bool)>,
+    is_nonce_account: bool,
+    nonce: &NonceFull,
     &durable_nonce: &DurableNonce,
     lamports_per_signature: u64,
-) -> bool {
-    if let Some((nonce, rollback)) = maybe_nonce {
-        if address == nonce.address() {
-            if rollback {
-                // The transaction failed which would normally drop the account
-                // processing changes, since this account is now being included
-                // in the accounts written back to the db, roll it back to
-                // pre-processing state.
-                *account = nonce.account().clone();
-            }
+) {
+    if is_nonce_account {
+        // The transaction failed which would normally drop the account
+        // processing changes, since this account is now being included
+        // in the accounts written back to the db, roll it back to
+        // pre-processing state.
+        *account = nonce.account().clone();
 
-            // Advance the stored blockhash to prevent fee theft by someone
-            // replaying nonce transactions that have failed with an
-            // `InstructionError`.
-            //
-            // Since we know we are dealing with a valid nonce account,
-            // unwrap is safe here
-            let nonce_versions = StateMut::<NonceVersions>::state(nonce.account()).unwrap();
-            if let NonceState::Initialized(ref data) = nonce_versions.state() {
-                let nonce_state = NonceState::new_initialized(
-                    &data.authority,
-                    durable_nonce,
-                    lamports_per_signature,
-                );
-                let nonce_versions = NonceVersions::new(nonce_state);
-                account.set_state(&nonce_versions).unwrap();
-            }
-            true
-        } else {
-            if execution_result.is_err() && is_fee_payer {
-                if let Some(fee_payer_account) = nonce.fee_payer_account() {
-                    // Instruction error and fee-payer for this nonce tx is not
-                    // the nonce account itself, rollback the fee payer to the
-                    // fee-paid original state.
-                    *account = fee_payer_account.clone();
-                }
-            }
-
-            false
+        // Advance the stored blockhash to prevent fee theft by someone
+        // replaying nonce transactions that have failed with an
+        // `InstructionError`.
+        //
+        // Since we know we are dealing with a valid nonce account,
+        // unwrap is safe here
+        let nonce_versions = StateMut::<NonceVersions>::state(account).unwrap();
+        if let NonceState::Initialized(ref data) = nonce_versions.state() {
+            let nonce_state =
+                NonceState::new_initialized(&data.authority, durable_nonce, lamports_per_signature);
+            let nonce_versions = NonceVersions::new(nonce_state);
+            account.set_state(&nonce_versions).unwrap();
         }
-    } else {
-        false
+    } else if is_fee_payer {
+        if let Some(fee_payer_account) = nonce.fee_payer_account() {
+            // Instruction error and fee-payer for this nonce tx is not
+            // the nonce account itself, rollback the fee payer to the
+            // fee-paid original state.
+            *account = fee_payer_account.clone();
+        }
     }
 }
 
@@ -834,7 +833,6 @@ mod tests {
     use {
         super::*,
         assert_matches::assert_matches,
-        solana_program_runtime::loaded_programs::ProgramCacheForTxBatch,
         solana_sdk::{
             account::{AccountSharedData, WritableAccount},
             address_lookup_table::state::LookupTableMeta,
@@ -886,7 +884,7 @@ mod tests {
                 executed_units: 0,
                 accounts_data_len_delta: 0,
             },
-            programs_modified_by_tx: Box::<ProgramCacheForTxBatch>::default(),
+            programs_modified_by_tx: HashMap::new(),
         }
     }
 
@@ -1664,7 +1662,7 @@ mod tests {
         accounts.accounts_db.clean_accounts_for_tests();
     }
 
-    fn create_accounts_prepare_if_nonce_account() -> (
+    fn create_accounts_post_process_failed_nonce() -> (
         Pubkey,
         AccountSharedData,
         AccountSharedData,
@@ -1687,32 +1685,29 @@ mod tests {
         )
     }
 
-    fn run_prepare_if_nonce_account_test(
-        account_address: &Pubkey,
+    fn run_post_process_failed_nonce_test(
         account: &mut AccountSharedData,
-        tx_result: &Result<()>,
         is_fee_payer: bool,
-        maybe_nonce: Option<(&NonceFull, bool)>,
+        is_nonce_account: bool,
+        nonce: &NonceFull,
         durable_nonce: &DurableNonce,
         lamports_per_signature: u64,
         expect_account: &AccountSharedData,
     ) -> bool {
         // Verify expect_account's relationship
         if !is_fee_payer {
-            match maybe_nonce {
-                Some((nonce, _)) if nonce.address() == account_address => {
-                    assert_ne!(expect_account, nonce.account())
-                }
-                _ => assert_eq!(expect_account, account),
+            if is_nonce_account {
+                assert_ne!(expect_account, nonce.account());
+            } else {
+                assert_eq!(expect_account, account);
             }
         }
 
-        prepare_if_nonce_account(
-            account_address,
+        post_process_failed_nonce(
             account,
-            tx_result,
             is_fee_payer,
-            maybe_nonce,
+            is_nonce_account,
+            nonce,
             durable_nonce,
             lamports_per_signature,
         );
@@ -1721,7 +1716,7 @@ mod tests {
     }
 
     #[test]
-    fn test_prepare_if_nonce_account_expected() {
+    fn test_post_process_failed_nonce_expected() {
         let (
             pre_account_address,
             pre_account,
@@ -1729,8 +1724,7 @@ mod tests {
             blockhash,
             lamports_per_signature,
             maybe_fee_payer_account,
-        ) = create_accounts_prepare_if_nonce_account();
-        let post_account_address = pre_account_address;
+        ) = create_accounts_post_process_failed_nonce();
         let nonce = NonceFull::new(
             pre_account_address,
             pre_account.clone(),
@@ -1744,12 +1738,11 @@ mod tests {
             )))
             .unwrap();
 
-        assert!(run_prepare_if_nonce_account_test(
-            &post_account_address,
+        assert!(run_post_process_failed_nonce_test(
             &mut post_account,
-            &Ok(()),
-            false,
-            Some((&nonce, true)),
+            false, // is_fee_payer
+            true,  // is_nonce_account
+            &nonce,
             &blockhash,
             lamports_per_signature,
             &expect_account,
@@ -1757,33 +1750,7 @@ mod tests {
     }
 
     #[test]
-    fn test_prepare_if_nonce_account_not_nonce_tx() {
-        let (
-            pre_account_address,
-            _pre_account,
-            _post_account,
-            blockhash,
-            lamports_per_signature,
-            _maybe_fee_payer_account,
-        ) = create_accounts_prepare_if_nonce_account();
-        let post_account_address = pre_account_address;
-
-        let mut post_account = AccountSharedData::default();
-        let expect_account = post_account.clone();
-        assert!(run_prepare_if_nonce_account_test(
-            &post_account_address,
-            &mut post_account,
-            &Ok(()),
-            false,
-            None,
-            &blockhash,
-            lamports_per_signature,
-            &expect_account,
-        ));
-    }
-
-    #[test]
-    fn test_prepare_if_nonce_account_not_nonce_address() {
+    fn test_post_process_failed_nonce_not_nonce_address() {
         let (
             pre_account_address,
             pre_account,
@@ -1791,54 +1758,16 @@ mod tests {
             blockhash,
             lamports_per_signature,
             maybe_fee_payer_account,
-        ) = create_accounts_prepare_if_nonce_account();
+        ) = create_accounts_post_process_failed_nonce();
 
         let nonce = NonceFull::new(pre_account_address, pre_account, maybe_fee_payer_account);
 
         let expect_account = post_account.clone();
-        // Wrong key
-        assert!(run_prepare_if_nonce_account_test(
-            &Pubkey::from([1u8; 32]),
+        assert!(run_post_process_failed_nonce_test(
             &mut post_account,
-            &Ok(()),
-            false,
-            Some((&nonce, true)),
-            &blockhash,
-            lamports_per_signature,
-            &expect_account,
-        ));
-    }
-
-    #[test]
-    fn test_prepare_if_nonce_account_tx_error() {
-        let (
-            pre_account_address,
-            pre_account,
-            mut post_account,
-            blockhash,
-            lamports_per_signature,
-            maybe_fee_payer_account,
-        ) = create_accounts_prepare_if_nonce_account();
-        let post_account_address = pre_account_address;
-        let mut expect_account = pre_account.clone();
-
-        let nonce = NonceFull::new(pre_account_address, pre_account, maybe_fee_payer_account);
-
-        expect_account
-            .set_state(&NonceVersions::new(NonceState::Initialized(
-                nonce::state::Data::new(Pubkey::default(), blockhash, lamports_per_signature),
-            )))
-            .unwrap();
-
-        assert!(run_prepare_if_nonce_account_test(
-            &post_account_address,
-            &mut post_account,
-            &Err(TransactionError::InstructionError(
-                0,
-                InstructionError::InvalidArgument,
-            )),
-            false,
-            Some((&nonce, true)),
+            false, // is_fee_payer
+            false, // is_nonce_account
+            &nonce,
             &blockhash,
             lamports_per_signature,
             &expect_account,
@@ -1850,7 +1779,7 @@ mod tests {
         let nonce_account = AccountSharedData::new_data(1, &(), &system_program::id()).unwrap();
         let pre_fee_payer_account =
             AccountSharedData::new_data(42, &(), &system_program::id()).unwrap();
-        let mut post_fee_payer_account =
+        let post_fee_payer_account =
             AccountSharedData::new_data(84, &[1, 2, 3, 4], &system_program::id()).unwrap();
         let nonce = NonceFull::new(
             Pubkey::new_unique(),
@@ -1858,54 +1787,21 @@ mod tests {
             Some(pre_fee_payer_account.clone()),
         );
 
-        assert!(run_prepare_if_nonce_account_test(
-            &Pubkey::new_unique(),
+        assert!(run_post_process_failed_nonce_test(
             &mut post_fee_payer_account.clone(),
-            &Err(TransactionError::InstructionError(
-                0,
-                InstructionError::InvalidArgument,
-            )),
-            false,
-            Some((&nonce, true)),
+            false, // is_fee_payer
+            false, // is_nonce_account
+            &nonce,
             &DurableNonce::default(),
             1,
             &post_fee_payer_account,
         ));
 
-        assert!(run_prepare_if_nonce_account_test(
-            &Pubkey::new_unique(),
+        assert!(run_post_process_failed_nonce_test(
             &mut post_fee_payer_account.clone(),
-            &Ok(()),
-            true,
-            Some((&nonce, true)),
-            &DurableNonce::default(),
-            1,
-            &post_fee_payer_account,
-        ));
-
-        assert!(run_prepare_if_nonce_account_test(
-            &Pubkey::new_unique(),
-            &mut post_fee_payer_account.clone(),
-            &Err(TransactionError::InstructionError(
-                0,
-                InstructionError::InvalidArgument,
-            )),
-            true,
-            None,
-            &DurableNonce::default(),
-            1,
-            &post_fee_payer_account,
-        ));
-
-        assert!(run_prepare_if_nonce_account_test(
-            &Pubkey::new_unique(),
-            &mut post_fee_payer_account,
-            &Err(TransactionError::InstructionError(
-                0,
-                InstructionError::InvalidArgument,
-            )),
-            true,
-            Some((&nonce, true)),
+            true,  // is_fee_payer
+            false, // is_nonce_account
+            &nonce,
             &DurableNonce::default(),
             1,
             &pre_fee_payer_account,
@@ -2157,7 +2053,8 @@ mod tests {
                     bank_id,
                     0,
                     &HashSet::new(),
-                    AccountAddressFilter::Exclude
+                    AccountAddressFilter::Exclude,
+                    false
                 )
                 .unwrap(),
             vec![]
@@ -2169,7 +2066,8 @@ mod tests {
                     bank_id,
                     0,
                     &all_pubkeys,
-                    AccountAddressFilter::Include
+                    AccountAddressFilter::Include,
+                    false
                 )
                 .unwrap(),
             vec![]
@@ -2184,7 +2082,8 @@ mod tests {
                     bank_id,
                     1,
                     &HashSet::new(),
-                    AccountAddressFilter::Exclude
+                    AccountAddressFilter::Exclude,
+                    false
                 )
                 .unwrap(),
             vec![(pubkey1, 42)]
@@ -2196,7 +2095,8 @@ mod tests {
                     bank_id,
                     2,
                     &HashSet::new(),
-                    AccountAddressFilter::Exclude
+                    AccountAddressFilter::Exclude,
+                    false
                 )
                 .unwrap(),
             vec![(pubkey1, 42), (pubkey0, 42)]
@@ -2208,7 +2108,8 @@ mod tests {
                     bank_id,
                     3,
                     &HashSet::new(),
-                    AccountAddressFilter::Exclude
+                    AccountAddressFilter::Exclude,
+                    false
                 )
                 .unwrap(),
             vec![(pubkey1, 42), (pubkey0, 42), (pubkey2, 41)]
@@ -2222,7 +2123,8 @@ mod tests {
                     bank_id,
                     6,
                     &HashSet::new(),
-                    AccountAddressFilter::Exclude
+                    AccountAddressFilter::Exclude,
+                    false
                 )
                 .unwrap(),
             vec![(pubkey1, 42), (pubkey0, 42), (pubkey2, 41)]
@@ -2237,7 +2139,8 @@ mod tests {
                     bank_id,
                     1,
                     &exclude1,
-                    AccountAddressFilter::Exclude
+                    AccountAddressFilter::Exclude,
+                    false
                 )
                 .unwrap(),
             vec![(pubkey0, 42)]
@@ -2249,7 +2152,8 @@ mod tests {
                     bank_id,
                     2,
                     &exclude1,
-                    AccountAddressFilter::Exclude
+                    AccountAddressFilter::Exclude,
+                    false
                 )
                 .unwrap(),
             vec![(pubkey0, 42), (pubkey2, 41)]
@@ -2261,7 +2165,8 @@ mod tests {
                     bank_id,
                     3,
                     &exclude1,
-                    AccountAddressFilter::Exclude
+                    AccountAddressFilter::Exclude,
+                    false
                 )
                 .unwrap(),
             vec![(pubkey0, 42), (pubkey2, 41)]
@@ -2276,7 +2181,8 @@ mod tests {
                     bank_id,
                     1,
                     &include1_2,
-                    AccountAddressFilter::Include
+                    AccountAddressFilter::Include,
+                    false
                 )
                 .unwrap(),
             vec![(pubkey1, 42)]
@@ -2288,7 +2194,8 @@ mod tests {
                     bank_id,
                     2,
                     &include1_2,
-                    AccountAddressFilter::Include
+                    AccountAddressFilter::Include,
+                    false
                 )
                 .unwrap(),
             vec![(pubkey1, 42), (pubkey2, 41)]
@@ -2300,7 +2207,8 @@ mod tests {
                     bank_id,
                     3,
                     &include1_2,
-                    AccountAddressFilter::Include
+                    AccountAddressFilter::Include,
+                    false
                 )
                 .unwrap(),
             vec![(pubkey1, 42), (pubkey2, 41)]
@@ -2328,7 +2236,10 @@ mod tests {
     #[test]
     fn test_maybe_abort_scan() {
         assert!(Accounts::maybe_abort_scan(ScanResult::Ok(vec![]), &ScanConfig::default()).is_ok());
-        let config = ScanConfig::default().recreate_with_abort();
+        assert!(
+            Accounts::maybe_abort_scan(ScanResult::Ok(vec![]), &ScanConfig::new(false)).is_ok()
+        );
+        let config = ScanConfig::new(false).recreate_with_abort();
         assert!(Accounts::maybe_abort_scan(ScanResult::Ok(vec![]), &config).is_ok());
         config.abort();
         assert!(Accounts::maybe_abort_scan(ScanResult::Ok(vec![]), &config).is_err());

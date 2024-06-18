@@ -28,6 +28,8 @@ solana-frozen-abi-macro = { workspace = true, optional = true }
 solana-measure = { workspace = true }
 solana-metrics = { workspace = true }
 solana-sdk = { workspace = true }
+solana-type-overrides = { workspace = true }
+solana-vote = { workspace = true }
 solana_rbpf = { workspace = true }
 thiserror = { workspace = true }
 
@@ -51,5 +53,7 @@ rustc_version = { workspace = true }
 frozen-abi = [
     "dep:solana-frozen-abi",
     "dep:solana-frozen-abi-macro",
+    "solana-compute-budget/frozen-abi",
     "solana-sdk/frozen-abi",
 ]
+shuttle-test = ["solana-type-overrides/shuttle-test"]

@@ -36,12 +36,13 @@ use {
             IndexOfAccount, InstructionAccount, TransactionAccount, TransactionContext,
         },
     },
+    solana_type_overrides::sync::{atomic::Ordering, Arc},
+    solana_vote::vote_account::VoteAccountsHashMap,
     std::{
         alloc::Layout,
         cell::RefCell,
         fmt::{self, Debug},
         rc::Rc,
-        sync::{atomic::Ordering, Arc},
     },
 };
 
@@ -146,6 +147,8 @@ impl BpfAllocator {
 
 pub struct EnvironmentConfig<'a> {
     pub blockhash: Hash,
+    epoch_total_stake: Option<u64>,
+    epoch_vote_accounts: Option<&'a VoteAccountsHashMap>,
     pub feature_set: Arc<FeatureSet>,
     pub lamports_per_signature: u64,
     sysvar_cache: &'a SysvarCache,
@@ -153,12 +156,16 @@ pub struct EnvironmentConfig<'a> {
 impl<'a> EnvironmentConfig<'a> {
     pub fn new(
         blockhash: Hash,
+        epoch_total_stake: Option<u64>,
+        epoch_vote_accounts: Option<&'a VoteAccountsHashMap>,
         feature_set: Arc<FeatureSet>,
         lamports_per_signature: u64,
         sysvar_cache: &'a SysvarCache,
     ) -> Self {
         Self {
             blockhash,
+            epoch_total_stake,
+            epoch_vote_accounts,
             feature_set,
             lamports_per_signature,
             sysvar_cache,
@@ -186,7 +193,7 @@ pub struct InvokeContext<'a> {
     /// Information about the currently executing transaction.
     pub transaction_context: &'a mut TransactionContext,
     /// The local program cache for the transaction batch.
-    pub program_cache_for_tx_batch: &'a ProgramCacheForTxBatch,
+    pub program_cache_for_tx_batch: &'a mut ProgramCacheForTxBatch,
     /// Runtime configurations used to provision the invocation environment.
     pub environment_config: EnvironmentConfig<'a>,
     /// The compute budget for the current invocation.
@@ -195,7 +202,6 @@ pub struct InvokeContext<'a> {
     /// the designated compute budget during program execution.
     compute_meter: RefCell<u64>,
     log_collector: Option<Rc<RefCell<LogCollector>>>,
-    pub programs_modified_by_tx: &'a mut ProgramCacheForTxBatch,
     /// Latest measurement not yet accumulated in [ExecuteDetailsTimings::execute_us]
     pub execute_time: Option<Measure>,
     pub timings: ExecuteDetailsTimings,
@@ -207,11 +213,10 @@ impl<'a> InvokeContext<'a> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         transaction_context: &'a mut TransactionContext,
-        program_cache_for_tx_batch: &'a ProgramCacheForTxBatch,
+        program_cache_for_tx_batch: &'a mut ProgramCacheForTxBatch,
         environment_config: EnvironmentConfig<'a>,
         log_collector: Option<Rc<RefCell<LogCollector>>>,
         compute_budget: ComputeBudget,
-        programs_modified_by_tx: &'a mut ProgramCacheForTxBatch,
     ) -> Self {
         Self {
             transaction_context,
@@ -220,20 +225,11 @@ impl<'a> InvokeContext<'a> {
             log_collector,
             compute_budget,
             compute_meter: RefCell::new(compute_budget.compute_unit_limit),
-            programs_modified_by_tx,
             execute_time: None,
             timings: ExecuteDetailsTimings::default(),
             syscall_context: Vec::new(),
             traces: Vec::new(),
         }
-    }
-
-    pub fn find_program_in_cache(&self, pubkey: &Pubkey) -> Option<Arc<ProgramCacheEntry>> {
-        // First lookup the cache of the programs modified by the current transaction. If not found, lookup
-        // the cache of the cache of the programs that are loaded for the transaction batch.
-        self.programs_modified_by_tx
-            .find(pubkey)
-            .or_else(|| self.program_cache_for_tx_batch.find(pubkey))
     }
 
     pub fn get_environments_for_slot(
@@ -614,6 +610,16 @@ impl<'a> InvokeContext<'a> {
         self.environment_config.sysvar_cache
     }
 
+    /// Get cached epoch total stake.
+    pub fn get_epoch_total_stake(&self) -> Option<u64> {
+        self.environment_config.epoch_total_stake
+    }
+
+    /// Get cached epoch vote accounts.
+    pub fn get_epoch_vote_accounts(&self) -> Option<&VoteAccountsHashMap> {
+        self.environment_config.epoch_vote_accounts
+    }
+
     // Should alignment be enforced during user pointer translation
     pub fn get_check_aligned(&self) -> bool {
         self.transaction_context
@@ -675,7 +681,7 @@ macro_rules! with_mock_invoke_context {
                 account::ReadableAccount, feature_set::FeatureSet, hash::Hash, sysvar::rent::Rent,
                 transaction_context::TransactionContext,
             },
-            std::sync::Arc,
+            solana_type_overrides::sync::Arc,
             $crate::{
                 invoke_context::{EnvironmentConfig, InvokeContext},
                 loaded_programs::ProgramCacheForTxBatch,
@@ -710,19 +716,19 @@ macro_rules! with_mock_invoke_context {
         });
         let environment_config = EnvironmentConfig::new(
             Hash::default(),
+            None,
+            None,
             Arc::new(FeatureSet::all_enabled()),
             0,
             &sysvar_cache,
         );
-        let program_cache_for_tx_batch = ProgramCacheForTxBatch::default();
-        let mut programs_modified_by_tx = ProgramCacheForTxBatch::default();
+        let mut program_cache_for_tx_batch = ProgramCacheForTxBatch::default();
         let mut $invoke_context = InvokeContext::new(
             &mut $transaction_context,
-            &program_cache_for_tx_batch,
+            &mut program_cache_for_tx_batch,
             environment_config,
             Some(LogCollector::new_ref()),
             compute_budget,
-            &mut programs_modified_by_tx,
         );
     };
 }
@@ -783,7 +789,7 @@ pub fn mock_process_instruction<F: FnMut(&mut InvokeContext), G: FnMut(&mut Invo
         *loader_id,
         Arc::new(ProgramCacheEntry::new_builtin(0, 0, builtin_function)),
     );
-    invoke_context.program_cache_for_tx_batch = &program_cache_for_tx_batch;
+    invoke_context.program_cache_for_tx_batch = &mut program_cache_for_tx_batch;
     pre_adjustments(&mut invoke_context);
     let result = invoke_context.process_instruction(
         instruction_data,
@@ -1040,7 +1046,7 @@ mod tests {
             callee_program_id,
             Arc::new(ProgramCacheEntry::new_builtin(0, 1, MockBuiltin::vm)),
         );
-        invoke_context.program_cache_for_tx_batch = &program_cache_for_tx_batch;
+        invoke_context.program_cache_for_tx_batch = &mut program_cache_for_tx_batch;
 
         // Account modification tests
         let cases = vec![
@@ -1189,7 +1195,7 @@ mod tests {
             program_key,
             Arc::new(ProgramCacheEntry::new_builtin(0, 0, MockBuiltin::vm)),
         );
-        invoke_context.program_cache_for_tx_batch = &program_cache_for_tx_batch;
+        invoke_context.program_cache_for_tx_batch = &mut program_cache_for_tx_batch;
 
         // Test: Resize the account to *the same size*, so not consuming any additional size; this must succeed
         {
