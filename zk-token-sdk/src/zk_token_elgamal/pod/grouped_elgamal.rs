@@ -3,12 +3,14 @@
 #[cfg(not(target_os = "solana"))]
 use crate::encryption::grouped_elgamal::GroupedElGamalCiphertext;
 use {
-    crate::zk_token_elgamal::pod::{
-        elgamal::{ElGamalCiphertext, DECRYPT_HANDLE_LEN, ELGAMAL_CIPHERTEXT_LEN},
-        pedersen::{PedersenCommitment, PEDERSEN_COMMITMENT_LEN},
-        Pod, Zeroable,
+    crate::{
+        errors::ElGamalError,
+        zk_token_elgamal::pod::{
+            elgamal::{ElGamalCiphertext, DECRYPT_HANDLE_LEN, ELGAMAL_CIPHERTEXT_LEN},
+            pedersen::{PedersenCommitment, PEDERSEN_COMMITMENT_LEN},
+        },
     },
-    solana_curve25519::errors::ElGamalError,
+    bytemuck::Zeroable,
     std::fmt,
 };
 
@@ -59,7 +61,7 @@ const GROUPED_ELGAMAL_CIPHERTEXT_3_HANDLES: usize =
     PEDERSEN_COMMITMENT_LEN + DECRYPT_HANDLE_LEN + DECRYPT_HANDLE_LEN + DECRYPT_HANDLE_LEN;
 
 /// The `GroupedElGamalCiphertext` type with two decryption handles as a `Pod`
-#[derive(Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
+#[derive(Clone, Copy, bytemuck_derive::Pod, bytemuck_derive::Zeroable, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct GroupedElGamalCiphertext2Handles(pub [u8; GROUPED_ELGAMAL_CIPHERTEXT_2_HANDLES]);
 
@@ -93,7 +95,7 @@ impl TryFrom<GroupedElGamalCiphertext2Handles> for GroupedElGamalCiphertext<2> {
 impl_extract!(TYPE = GroupedElGamalCiphertext2Handles);
 
 /// The `GroupedElGamalCiphertext` type with three decryption handles as a `Pod`
-#[derive(Clone, Copy, Pod, Zeroable, PartialEq, Eq)]
+#[derive(Clone, Copy, bytemuck_derive::Pod, bytemuck_derive::Zeroable, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct GroupedElGamalCiphertext3Handles(pub [u8; GROUPED_ELGAMAL_CIPHERTEXT_3_HANDLES]);
 

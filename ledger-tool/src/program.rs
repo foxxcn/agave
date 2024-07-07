@@ -103,12 +103,8 @@ impl ProgramSubCommand for App<'_, '_> {
             )
             .required(true)
             .index(1);
-        let max_genesis_arg = Arg::with_name("max_genesis_archive_unpacked_size")
-            .long("max-genesis-archive-unpacked-size")
-            .value_name("NUMBER")
-            .takes_value(true)
-            .default_value("10485760")
-            .help("maximum total uncompressed size of unpacked genesis archive");
+
+        let load_genesis_config_arg = load_genesis_arg();
         let snapshot_config_args = snapshot_args();
 
         self.subcommand(
@@ -161,8 +157,8 @@ and the following fields are required
                         .takes_value(true)
                         .default_value("0"),
                 )
+                .arg(&load_genesis_config_arg)
                 .args(&snapshot_config_args)
-                .arg(&max_genesis_arg)
                 .arg(
                     Arg::with_name("memory")
                         .help("Heap memory for the program to run on")
@@ -561,7 +557,7 @@ pub fn program(ledger_path: &Path, matches: &ArgMatches<'_>) {
         account_lengths,
         &mut invoke_context,
     );
-    let mut vm = vm.unwrap();
+    let (mut vm, _, _) = vm.unwrap();
     let start_time = Instant::now();
     if matches.value_of("mode").unwrap() == "debugger" {
         vm.debug_port = Some(matches.value_of("port").unwrap().parse::<u16>().unwrap());

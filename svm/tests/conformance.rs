@@ -1,7 +1,6 @@
 use {
     crate::{
         mock_bank::{MockBankCallback, MockForkGraph},
-        proto::{InstrEffects, InstrFixture},
         transaction_builder::SanitizedTransactionBuilder,
     },
     lazy_static::lazy_static,
@@ -43,6 +42,7 @@ use {
             TransactionProcessingEnvironment,
         },
     },
+    solana_svm_conformance::proto::{InstrEffects, InstrFixture},
     std::{
         collections::{HashMap, HashSet},
         env,
@@ -55,9 +55,6 @@ use {
     },
 };
 
-mod proto {
-    include!(concat!(env!("OUT_DIR"), "/org.solana.sealevel.v1.rs"));
-}
 mod mock_bank;
 mod transaction_builder;
 
@@ -151,7 +148,7 @@ fn run_from_folder(base_dir: &PathBuf, run_as_instr: &HashSet<OsString>) {
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer).expect("Failed to read file");
 
-        let fixture = proto::InstrFixture::decode(buffer.as_slice()).unwrap();
+        let fixture = InstrFixture::decode(buffer.as_slice()).unwrap();
         let execute_as_instr = run_as_instr.contains(&filename);
         run_fixture(fixture, filename, execute_as_instr);
     }
@@ -265,9 +262,7 @@ fn run_fixture(fixture: InstrFixture, filename: OsString, execute_as_instr: bool
 
     #[allow(deprecated)]
     let (blockhash, lamports_per_signature) = batch_processor
-        .sysvar_cache
-        .read()
-        .unwrap()
+        .sysvar_cache()
         .get_recent_blockhashes()
         .ok()
         .and_then(|x| (*x).last().cloned())
@@ -281,6 +276,7 @@ fn run_fixture(fixture: InstrFixture, filename: OsString, execute_as_instr: bool
     };
     let processor_config = TransactionProcessingConfig {
         account_overrides: None,
+        check_program_modification_slot: false,
         compute_budget: None,
         log_messages_bytes_limit: None,
         limit_to_load_programs: true,
@@ -400,7 +396,7 @@ fn execute_fixture_as_instr(
     filename: OsString,
     cu_avail: u64,
 ) {
-    let rent = if let Ok(rent) = batch_processor.sysvar_cache.read().unwrap().get_rent() {
+    let rent = if let Ok(rent) = batch_processor.sysvar_cache().get_rent() {
         (*rent).clone()
     } else {
         Rent::default()
@@ -415,7 +411,7 @@ fn execute_fixture_as_instr(
     let mut transaction_context = TransactionContext::new(
         transaction_accounts,
         rent,
-        compute_budget.max_invoke_stack_height,
+        compute_budget.max_instruction_stack_depth,
         compute_budget.max_instruction_trace_length,
     );
 
@@ -455,7 +451,7 @@ fn execute_fixture_as_instr(
 
     let log_collector = LogCollector::new_ref();
 
-    let sysvar_cache = &batch_processor.sysvar_cache.read().unwrap();
+    let sysvar_cache = &batch_processor.sysvar_cache();
     let env_config = EnvironmentConfig::new(
         Hash::default(),
         None,
